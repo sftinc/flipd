@@ -46,6 +46,15 @@ test('add writes the config with placeholders, generates a key, prints the next 
   assert.match(o.out(), /https:\/\/deploy\.example\.com\/deploy/);
   assert.match(o.out(), /remote-deploy check r/);
   assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
+  // The webhook-creation recipe must never carry WEBHOOK_SECRET as a command's
+  // argv token (readable by any local user via `ps`/`/proc/<pid>/cmdline` for
+  // the life of that process) or leave it sitting in shell history as part of a
+  // `-f config[secret]=...` flag: it must go over stdin instead.
+  assert.match(o.out(), /--input -/, 'the webhook is created from a JSON body on stdin, not -f flags');
+  assert.doesNotMatch(o.out(), /-f\s+"?config\[secret\]/, 'no gh flag carries config[secret] on argv');
+  assert.match(o.out(), /process\.env\.SECRET/, 'the secret reaches node through the environment, not argv');
+  const ghLine = o.out().split('\n').find((l) => /\bgh api\b/.test(l));
+  assert.ok(ghLine && !/\$\(/.test(ghLine), 'the gh api invocation itself takes no command substitution as an argument');
   assert.equal(await add(['git@github.com:o/r.git'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x', '--name', 'Bad Name'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x'], { paths: p, ...io() }), 1, 'no name derivable and none given');

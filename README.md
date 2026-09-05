@@ -52,16 +52,25 @@ failed row, `3` service down.
 `sudo`.**
 
 `status`, `check`, `run`, `rollback` and `log` don't need `sudo`, but they do
-need your account in the `remote-deploy` group (the install step above) — they
-either talk to the Unix socket at `/run/remote-deploy/remote-deploy.sock`
-(mode `0660`, owner `remote-deploy:remote-deploy`) or read
-`/var/log/remote-deploy` (mode `0750`, same owner), and neither is
-world-readable on purpose: that socket is the only way to reach `run`,
-`rollback` and the deploy key `check` needs. Without group membership (and not
-running as root), `status` and `check` report the same `service down` you'd
-see if the service had actually crashed — if you see that but
-`systemctl status remote-deploy` says otherwise, it's almost always a missing
-group, not a dead service.
+need your account in the `remote-deploy` group (the install step above) — none
+of the three directories they touch is world-readable, on purpose:
+`/etc/remote-deploy/repos` (mode `0750`, `root:remote-deploy` — `status` and
+`check` list repos from it), the Unix socket at
+`/run/remote-deploy/remote-deploy.sock` (mode `0660`,
+`remote-deploy:remote-deploy` — the only way to reach `run`, `rollback`, and
+the deploy key `check` needs), and `/var/log/remote-deploy` (mode `0750`, same
+owner — `log` reads from it). Without group membership (and not running as
+root):
+
+- `check`, `run`, `rollback` and `log` report `service down` from the
+  unreachable socket or an unreadable log directory, indistinguishable from
+  the service actually being down;
+- `status` fails outright with a bare `EACCES: permission denied, scandir
+  '/etc/remote-deploy/repos'` (exit `1`), since it cannot even list the
+  configured repos.
+
+If you see either of those but `systemctl status remote-deploy` says the
+service is fine, it's almost always a missing group, not a dead service.
 
 ## Commands
 
@@ -70,9 +79,9 @@ group, not a dead service.
 | `remote-deploy serve` | run by systemd as `remote-deploy` | runs until `SIGTERM`/`SIGINT` |
 | `remote-deploy add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem; `2` usage |
 | `remote-deploy check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)) |
-| `remote-deploy run <name>` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `2` usage; `3` service down |
+| `remote-deploy run <name>` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down |
 | `remote-deploy rollback <name>` | group (or sudo) | same as `run`, printing `queued rollback of <name> to <sha>` or `not queued: <reason>` |
-| `remote-deploy status [name]` | none (activity column needs group/sudo, or shows `service down`) | `0` printed; `1` no such repo / nothing configured |
+| `remote-deploy status [name]` | group (or sudo) | `0` printed (the activity column falls back to `service down` if the socket is merely unreachable); `1` no such repo / nothing configured, **or** a bare `EACCES` if you're not in the `remote-deploy` group — see [Permissions](#permissions) |
 | `remote-deploy log <name> [--follow]` | group (or sudo) | `0` printed (or tailing, until `--follow` is stopped); `1` no logs / read error; `2` usage |
 | `remote-deploy env <name> build\|deploy [--set K=V] [--unset K]` | sudo | `0` saved; `1` bad key/value, unparseable file, or editor exited non-zero; `2` usage |
 | `remote-deploy remove <name>` | sudo | `0` config removed (state, logs and env files are kept — the command prints the `rm` lines for all three); `1` no such repo, or it's running/queued; `2` usage |

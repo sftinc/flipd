@@ -21,10 +21,20 @@ done
 # --host is interpolated verbatim into a Caddyfile server block and into the
 # ping URL below; a malformed value would land in a config that root then
 # asks systemd to reload. Check its shape before it is used anywhere.
+#
+# The character-class case check comes first and on its own: glob matching in
+# `case` applies to the whole value as one string, with no per-line semantics,
+# so it also catches a value that carries an embedded newline (which a
+# per-line `grep -E "^...$"` over the same bytes would miss a match for on
+# whichever line matched, letting the rest ride along unchecked into a `sed`
+# script and a Caddy config). Only once every byte is known to be a hostname
+# character does the second check apply the actual hostname shape.
 HOST_RE='^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
-if [ -n "$HOST" ] && ! printf '%s' "$HOST" | grep -qE "$HOST_RE"; then
-  echo "install.sh: --host '$HOST' does not look like a hostname" >&2
-  exit 1
+if [ -n "$HOST" ]; then
+  case "$HOST" in
+    *[!A-Za-z0-9.-]*) echo "install.sh: --host '$HOST' contains a character that is not a letter, digit, '.' or '-'" >&2; exit 1 ;;
+  esac
+  printf '%s' "$HOST" | grep -qE "$HOST_RE" || { echo "install.sh: --host '$HOST' does not look like a hostname" >&2; exit 1; }
 fi
 
 [ "$(id -u)" -eq 0 ] || { echo "install.sh must run as root (use sudo)" >&2; exit 1; }
@@ -62,7 +72,6 @@ LOG_MAX_BYTES=52428800
 EOF
   )
   sed -i '/^$/d' /etc/remote-deploy/remote-deploy.conf
-  chown root:remote-deploy /etc/remote-deploy/remote-deploy.conf; chmod 0640 /etc/remote-deploy/remote-deploy.conf
   say "wrote /etc/remote-deploy/remote-deploy.conf  (LISTEN=127.0.0.1:9000, new WEBHOOK_SECRET)"
 elif [ -n "$HOST" ]; then
   if grep -q '^PUBLIC_HOST=' /etc/remote-deploy/remote-deploy.conf; then
@@ -72,6 +81,15 @@ elif [ -n "$HOST" ]; then
   fi
   say "set PUBLIC_HOST=$HOST in /etc/remote-deploy/remote-deploy.conf"
 fi
+# Unconditional, on every run, whether the file was just created, just edited
+# for --host, or untouched this time: an operator who hand-writes this file
+# before the first install (both the README and `add`'s own output point at
+# it) leaves it root:root 0600, and a run that only fixed ownership inside the
+# "just created" branch above would never repair that -- the service, which
+# runs as User=remote-deploy, would then get EACCES and crash-loop forever.
+# Same story if a previous run died between the heredoc and this chown/chmod.
+chown root:remote-deploy /etc/remote-deploy/remote-deploy.conf
+chmod 0640 /etc/remote-deploy/remote-deploy.conf
 
 # 5. GitHub host keys
 if [ ! -s /var/lib/remote-deploy/.ssh/known_hosts ]; then
@@ -79,24 +97,76 @@ if [ ! -s /var/lib/remote-deploy/.ssh/known_hosts ]; then
     let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
       const m=JSON.parse(s); for (const k of m.ssh_keys) console.log("github.com " + k); })') \
     || { echo "could not fetch GitHub host keys from api.github.com/meta; refusing to write an empty known_hosts" >&2; exit 1; }
+  # curl and node can both succeed with an empty (or keyless) response; that is
+  # not "no ssh_keys", it is "GitHub sent nothing useful", and writing it would
+  # leave a non-empty known_hosts (even a single newline satisfies `[ -s ]`
+  # above) that this whole block would then skip on every future run, wedging
+  # every git fetch on host key verification with no way to retry short of
+  # deleting the file by hand.
+  [ -n "$KEYS" ] || { echo "api.github.com/meta returned no ssh_keys; refusing to write an empty known_hosts" >&2; exit 1; }
   printf '%s\n' "$KEYS" > /var/lib/remote-deploy/.ssh/known_hosts
   chown remote-deploy:remote-deploy /var/lib/remote-deploy/.ssh/known_hosts; chmod 0644 /var/lib/remote-deploy/.ssh/known_hosts
   say "wrote known_hosts from api.github.com/meta"
 fi
 
-# 6. service
-install -m 0644 "$HERE/remote-deploy.service" /etc/systemd/system/remote-deploy.service
-systemctl daemon-reload
-systemctl enable --now remote-deploy >/dev/null 2>&1 || systemctl restart remote-deploy
-say "enabled remote-deploy.service"
-
-# 7. command
+# 6. command (before the service starts: systemd execs this file directly,
+# so it must already be +x, and a checkout that lost the mode bit must not
+# leave the service unstarted only because this ran after it)
 ln -sfn "$HERE/bin/remote-deploy" /usr/local/bin/remote-deploy
 chmod +x "$HERE/bin/remote-deploy"
 say "linked /usr/local/bin/remote-deploy"
 
+# 7. service
+# The shipped unit hardcodes ExecStart=/opt/remote-deploy/bin/remote-deploy so the
+# static test's assertion means something concrete; a clone anywhere else must not
+# be a hard requirement with no safety value, so when $HERE differs, substitute the
+# real path into the installed copy instead and say so, out loud, every time it
+# happens -- the installed unit must never silently disagree with the file in the repo.
+if [ "$HERE" = /opt/remote-deploy ]; then
+  install -m 0644 "$HERE/remote-deploy.service" /etc/systemd/system/remote-deploy.service
+else
+  sed "s|^ExecStart=.*|ExecStart=$HERE/bin/remote-deploy serve|" "$HERE/remote-deploy.service" > /etc/systemd/system/remote-deploy.service
+  chmod 0644 /etc/systemd/system/remote-deploy.service
+  say "note: this clone is at $HERE, not /opt/remote-deploy; installed unit's ExecStart was rewritten to $HERE/bin/remote-deploy serve"
+fi
+systemctl daemon-reload
+systemctl enable remote-deploy >/dev/null 2>&1
+# Always (re)start, not just on first install: `enable --now` is a no-op on an
+# already-running unit, so a re-run after `git pull` would otherwise reload the
+# unit file and leave the old code running under a clean-looking transcript.
+systemctl restart remote-deploy
+# Type=simple means `restart` returns the instant the new process execs, which
+# tells us nothing about whether it stayed up -- a bad conf, a permissions
+# mistake, or a missing secret all exit within milliseconds under
+# Restart=on-failure/RestartSec=3, and a transcript that only checked the
+# command's own exit status would call that "enabled" right next to a service
+# crash-looping forever. Give it a moment to settle, then check for real.
+sleep 2
+if ! systemctl is-active --quiet remote-deploy; then
+  echo "remote-deploy.service did not stay running; check: journalctl -u remote-deploy" >&2
+  exit 1
+fi
+say "remote-deploy.service is enabled and running"
+
 # 8. logrotate
 install -m 0644 "$HERE/remote-deploy.logrotate" /etc/logrotate.d/remote-deploy
+
+# The socket at /run/remote-deploy/remote-deploy.sock and /var/log/remote-deploy
+# are root:remote-deploy on purpose (that is the entire access control for
+# run/rollback/check, and for log) -- so any admin account other than root
+# needs group membership to use remote-deploy without sudo. Printed here,
+# before the Caddy section below: that section can abort for reasons that have
+# nothing to do with remote-deploy itself (a pre-existing Caddyfile with a
+# syntax error is enough, since both `reload` and `restart` then fail under
+# `set -e`), and an operator who never sees this line has no way to tell a
+# permissions problem from a dead service the next time `status` says so.
+ADMIN_USER="${SUDO_USER:-<your-user>}"
+cat <<EOF
+
+so your own login can run 'status', 'check', 'run', 'rollback' and 'log' without sudo:
+  sudo usermod -aG remote-deploy $ADMIN_USER
+this takes effect on your next login (or run 'newgrp remote-deploy' in the current shell).
+EOF
 
 # 9. Caddy
 CADDY_BLOCK="${HOST:-deploy.example.com} {
@@ -111,7 +181,14 @@ if [ -n "$HOST" ]; then
   if ! command -v caddy >/dev/null; then
     if command -v apt-get >/dev/null; then
       apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl >/dev/null
-      curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+      # gpg --dearmor -o refuses non-interactively to overwrite an existing file, and
+      # `command -v caddy` is not a proxy for "the keyring was written": a first run
+      # that wrote the keyring and then hit a network blip at `apt-get update` would
+      # otherwise abort here on every later run too, forever, before ever reaching
+      # the caddy install, the Caddyfile edit or the ping proof below.
+      if [ ! -e /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]; then
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+      fi
       curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
       apt-get update >/dev/null && apt-get install -y caddy >/dev/null
       say "installed caddy (apt)"
@@ -166,18 +243,6 @@ $(printf '%s\n' "$CADDY_BLOCK" | sed 's/^/  /')
 or re-run:  sudo $0 --host deploy.example.com
 EOF
 fi
-
-# The socket and /run/remote-deploy are root:remote-deploy, mode 0660/0750, on
-# purpose (that is the entire access control for run/rollback/check, and so
-# is /var/log/remote-deploy for log) -- so any admin account other than root
-# needs group membership to use remote-deploy without sudo.
-ADMIN_USER="${SUDO_USER:-<your-user>}"
-cat <<EOF
-
-so your own login can run 'status', 'check', 'run', 'rollback' and 'log' without sudo:
-  sudo usermod -aG remote-deploy $ADMIN_USER
-this takes effect on your next login (or run 'newgrp remote-deploy' in the current shell).
-EOF
 
 say ""
 say "next: sudo remote-deploy add <git-url>"
