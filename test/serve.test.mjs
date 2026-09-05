@@ -3,10 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHmac } from 'node:crypto';
+import net from 'node:net';
 import { makePrefix, makeSourceRepo, writeMain, writeRepoConf } from './helpers.mjs';
 import { readState, writeState, emptyState } from '../lib/state.mjs';
-import { serve, reconcile } from '../lib/serve.mjs';
+import { serve, reconcile, findRepoFor } from '../lib/serve.mjs';
 import { sendCommand } from '../lib/socket.mjs';
+
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close((err) => (err ? reject(err) : resolve(port)));
+    });
+    srv.once('error', reject);
+  });
+}
 
 async function waitFor(fn, ms = 10000) {
   const t0 = Date.now();
@@ -57,7 +69,10 @@ test('reconcile: a real run that was interrupted mid-deploy reads as interrupted
   const ac = new AbortController();
   const ctx = { paths: p, main: await loadMain(p), repo: await loadRepo(p, 'r'), now: () => new Date(), protectedTargets: () => ({ targets: [], reserved: false }), signal: ac.signal, journal: () => {}, graceMs: 200 };
   const running = runEntry(ctx, { kind: 'webhook', name: 'r' });
-  await new Promise((r) => setTimeout(r, 1500));
+  // Poll rather than a fixed sleep: a real clone and worktree add must finish
+  // before the flip sets `pending`, and a fixed delay is a flake risk on a
+  // loaded machine.
+  await waitFor(async () => (await readState(p.repoDir('r'))).pending !== null);
   // Simulate the crash: the process dies here, so close never runs. Take the on-disk state as it is now.
   const midState = await readState(p.repoDir('r'));
   assert.ok(midState.pending, 'flipped');
@@ -180,4 +195,92 @@ test('a push while pending is refused with 200', async () => {
   } finally {
     await svc.close();
   }
+});
+
+test('serve closes the hook server if the socket fails to start, so a retry can bind the same port', async () => {
+  const p = await makePrefix();
+  const port = await getFreePort();
+  await fs.mkdir(path.dirname(p.mainConf), { recursive: true });
+  await fs.writeFile(p.mainConf, `WEBHOOK_SECRET=testsecret\nLISTEN=127.0.0.1:${port}\n`);
+  // Occupy the socket's path with something createSocketServer cannot bind
+  // to: a directory makes its very first `fs.rm(sockPath, {force:true})`
+  // throw before it ever attempts to listen — the same "throws after the
+  // hook is already up" shape as the real EINVAL this fix was written for.
+  await fs.mkdir(p.sock);
+  await assert.rejects(serve({ paths: p, journal: () => {} }));
+  await fs.rm(p.sock, { recursive: true, force: true });
+  // If the failed attempt's hook server were still listening, binding this
+  // exact, fixed port again would fail with EADDRINUSE.
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    assert.equal(svc.hookPort, port);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('reconcile: one repo failing does not stop reconcile for the others', async () => {
+  const p = await makePrefix();
+  const good = p.repoDir('good');
+  await fs.mkdir(good, { recursive: true });
+  await writeState(good, { ...emptyState(), last: { attempt: 't', outcome: null, finished: null } });
+  // state.json itself reads fine (so the failure isn't just the already-
+  // guarded readState call): current.tmp is a directory instead of a
+  // symlink/file, so the unguarded `fs.rm(current.tmp, {force:true})` throws
+  // EISDIR partway through this repo's reconcile step.
+  const bad = p.repoDir('bad');
+  await fs.mkdir(bad, { recursive: true });
+  await writeState(bad, emptyState());
+  await fs.mkdir(path.join(bad, 'current.tmp'));
+  const lines = [];
+  await reconcile(p, (l) => lines.push(l));
+  const s = await readState(good);
+  assert.equal(s.last.outcome, 'interrupted', 'the good repo is still reconciled');
+  assert.ok(lines.some((l) => /\[bad\].*reconcile failed/.test(l)), 'the bad repo is journaled, not thrown');
+});
+
+test('reconcile leaves the release current still points to, even with no state.json for it', async () => {
+  const p = await makePrefix();
+  const dir = p.repoDir('r');
+  await fs.mkdir(path.join(dir, 'releases', 'live-one'), { recursive: true });
+  await fs.symlink('releases/live-one', path.join(dir, 'current'));
+  // No state.json at all: emptyState()'s releases map is empty, so a naive
+  // sweep would treat every release directory - including the live one - as
+  // unregistered.
+  await writeState(dir, emptyState());
+  await reconcile(p, () => {});
+  await fs.stat(path.join(dir, 'releases', 'live-one'));
+});
+
+test('findRepoFor: a corrupt state.json for one repo does not break rename-matching for others', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'corrupt', { REPO: 'git@github.com:o/corrupt.git', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'ok', { REPO: 'git@github.com:o/ok.git', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.repoDir('corrupt'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('corrupt'), 'state.json'), 'not json');
+  await writeState(p.repoDir('ok'), { ...emptyState(), github_id: 999 });
+  const lines = [];
+  const find = findRepoFor(p, (l) => lines.push(l));
+  const repo = await find({ sshUrl: 'git@github.com:o/renamed.git', branch: 'main', id: 999 });
+  assert.equal(repo?.name, 'ok');
+  assert.ok(lines.some((l) => /\[corrupt\].*could not read state/.test(l)));
+});
+
+test('shutdown journals a queued-but-not-yet-started entry that gets dropped', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'sleep 5', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r1' }), { ok: true, queued: true });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+  // r2 cannot start while r1 is running: it sits in the queue, not yet
+  // started, right up until close() drops it.
+  assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r2' }), { ok: true, queued: true });
+  assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, ['r2']);
+  await svc.close();
+  assert.ok(lines.some((l) => /\[r2\].*dropped at shutdown/.test(l)), 'the dropped entry is journaled, not silent');
 });

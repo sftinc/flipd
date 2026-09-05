@@ -33,14 +33,22 @@ export async function tmpdir(label = 'remote-deploy', base = os.tmpdir()) {
 // each session a long, random /var/folders/.../T directory), leaving too
 // little room for etc/remote-deploy/... under it plus the socket's own
 // name. Every test that starts a real socket server needs a workable path,
-// so root the prefix somewhere short and fixed instead of wherever the OS's
-// tmp convention happens to be. /tmp is standard and short on every POSIX
-// target this project runs or is tested on; os.tmpdir() is kept as the
-// fallback elsewhere (e.g. Windows) where that assumption does not hold.
-const SHORT_TMP_BASE = process.platform === 'win32' ? os.tmpdir() : '/tmp';
+// so root the prefix somewhere short instead of wherever the OS's tmp
+// convention happens to be. An explicit TMPDIR that is already short enough
+// is honoured — someone who set one on purpose knows what they are doing —
+// and only overridden with /tmp (standard and short on every POSIX target
+// this project runs or is tested on) when it is not. os.tmpdir() is kept as
+// the fallback on Windows, which this project does not target but which
+// costs nothing to guard.
+function shortTmpBase() {
+  if (process.platform === 'win32') return os.tmpdir();
+  const explicit = process.env.TMPDIR;
+  if (explicit && Buffer.byteLength(explicit) < 40) return explicit;
+  return '/tmp';
+}
 
 export async function makePrefix() {
-  const prefix = await tmpdir('remote-deploy-prefix', SHORT_TMP_BASE);
+  const prefix = await tmpdir('remote-deploy-prefix', shortTmpBase());
   const p = paths(prefix);
   for (const d of [p.reposDir, p.envDir, p.lib, p.log, path.dirname(p.sock), path.dirname(p.knownHosts)]) {
     await fs.mkdir(d, { recursive: true });
