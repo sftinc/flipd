@@ -168,6 +168,7 @@ repos are unaffected.
 | `DEPLOY_ENV_FILE` | no | `/etc/deployd/env/<name>.deploy` if it exists | A `KEY=value` file whose entries are added to DEPLOY's environment only |
 | `KEY` | no | `/var/lib/deployd/<name>/key` | Private key for the fetch. Set to share one machine-user key across repos |
 | `TIMEOUT` | no | `1200` | Seconds allowed for BUILD, and separately for DEPLOY |
+| `HOOK_HOST` | no | | Written by `add`: the `PUBLIC_HOST` at the time, so `status` can notice when the box has been renamed and the GitHub webhook has not |
 
 ### The config parser
 
@@ -514,7 +515,7 @@ short command.
 | `deployd check <name> [--set-remote]` | no | Parses the config, confirms the key exists, creates the bare clone if missing, and compares the clone's `origin` with `REPO` (refuses on mismatch; `--set-remote` repoints it). Runs `git ls-remote` against `REPO` with the key and prints the branch head sha beside the live sha, with `behind` when they differ. No fetch into the shared clone, so it cannot race a run in progress. No build |
 | `deployd run <name>` | yes | Queues a forced run: no same-sha check, no watch filter. Builds into a new release directory even if the sha is already live |
 | `deployd rollback <name>` | yes | Resolves the target now and queues a rollback |
-| `deployd status [name]` | no | One row per repo: branch, live sha, last outcome and time, queued or running. `PENDING <release-id>` in capitals when a flip is unconfirmed |
+| `deployd status [name]` | no | One row per repo: branch, live sha, last outcome and time, queued or running. `PENDING <release-id>` in capitals when a flip is unconfirmed. If `PUBLIC_HOST` differs from the `HOOK_HOST` recorded in the repo's config by `add`, one extra line says the GitHub webhook still points at the old name |
 | `deployd log <name> [--follow]` | no | Prints the latest run log, or tails the one in progress |
 | `deployd env <name> build\|deploy [--set K=V] [--unset K]` | no | Creates the env file if missing (`root:deployd`, `0640`) and opens it in `$EDITOR`, or edits one line with `--set`/`--unset`. Re-parses on save and re-opens on a malformed line. Prints the key names, never the values |
 | `deployd remove <name>` | no | Refuses if the service reports that name queued or running; otherwise deletes the config file only and prints the `rm` lines for state and logs |
