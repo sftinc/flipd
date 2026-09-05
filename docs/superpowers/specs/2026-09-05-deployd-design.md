@@ -388,9 +388,10 @@ It:
 Re-running it is safe: every step is skip-if-present.
 
 Upgrading deployd is `git pull` in `/opt/deployd` and `systemctl restart deployd`.
-A run in progress is killed by the restart and its outcome recorded as `build
-failed` or `deploy failed` with `interrupted by restart` in the log; the queue is
-in memory and is lost. Restart when `deployd status` shows nothing running.
+On SIGTERM the service kills the command in progress, records the run's outcome
+as `build failed` or `deploy failed` with `interrupted by restart` in its log and
+in `state.json`, and exits. The queue is in memory and is lost. Restart when
+`deployd status` shows nothing running.
 
 ## 9 · Code shape
 
