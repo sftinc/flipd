@@ -237,7 +237,10 @@ to a regular expression; there is no dependency.
 ### The queue
 
 One worker, one queue. An entry is typed: `{kind, name, target}` where `kind` is
-`webhook`, `manual` or `rollback`, and `target` is set only for a rollback.
+`webhook`, `manual`, `rollback` or `check`, and `target` is set only for a rollback.
+A `check` entry is accepted only when the worker is idle (section 7). A webhook
+entry also carries the `repository.id` from the payload, so the worker, which is
+the only writer of `state.json`, can record it.
 
 - A **webhook** entry is dropped if a webhook or manual entry for that name is
   already queued *behind every queued rollback for that name*; otherwise it is
@@ -250,7 +253,10 @@ One worker, one queue. An entry is typed: `{kind, name, target}` where `kind` is
 - A **rollback** entry is always appended. Its target release is resolved when the
   command is accepted, not when it runs, so a push that lands in between cannot
   change what the rollback flips to, and the target is protected from prune for as
-  long as the entry is queued. If there is nothing to roll back to, the command is
+  long as the entry is queued. Acceptance is a *reservation* made before the state
+  file is read: while a reservation for a repo is unresolved, prune for that repo
+  is deferred to the next attempt, so a confirmation landing between "read state"
+  and "queue the entry" cannot prune the release the rollback is about to name. If there is nothing to roll back to, the command is
   refused at accept time.
 
 There is no priority. Entries run in the order they were accepted.
@@ -373,7 +379,11 @@ skip, so a string of broken commits cannot fill the disk with release directorie
    variables the table below names plus `DEPLOY_OUTCOME`, `DEPLOY_LOG` (the attempt
    log's path) and the deploy env file, capped at 60 seconds. Its output and exit
    code go to `events.log` as `notified <attempt-id> exit <code>`. It cannot change
-   the outcome. Startup runs it too for an attempt it finds interrupted.
+   the outcome. Startup runs it too for an attempt it finds interrupted. **It does
+   not inherit the shutdown signal**: a service restart mid-deploy is exactly when a
+   message is wanted, so during shutdown the notifier still runs, capped at eight
+   seconds so it fits inside systemd's stop timeout, and nothing waits on it after
+   that.
 
 ### Rollback
 
@@ -399,15 +409,19 @@ run killed by service shutdown is recorded as `interrupted`.
 
 ### Startup
 
-`deployd serve` reads every repo's `state.json`. A non-null `pending` means the
-service died between the flip and the confirmation. It is logged to journald and to
-that repo's `events.log` as `interrupted <release-id>`, `state.last.outcome` is set
-to `interrupted` if it was not already final, and the repo is treated exactly as
-after a `deploy failed`: `current` is left where it is, and webhook runs are refused
-until a rollback or a manual run settles it. A stale `current.tmp` is removed, and
-so is any `releases/<id>` directory that `state.releases` does not know about (a
-crash between the worktree add and its registration). If the repo has
-`ON_FAILURE`, it runs with `DEPLOY_OUTCOME=interrupted`.
+`deployd serve` reads every repo's `state.json`. **`last.finished` being null is the
+signal**: `state.last` is written to disk when an attempt opens and finalised when
+it closes, so a null `finished` means the service died inside that attempt. That
+attempt is recorded as `interrupted` in `state.last`, in journald, and in the
+repo's `events.log`; if `pending` is also set, the message says that `current` is
+flipped to an unconfirmed release and names the rollback command; and if the repo
+has `ON_FAILURE`, it runs with `DEPLOY_OUTCOME=interrupted`. A non-null `pending`
+beside a *final* `last` is not a new interruption: it is a failed deploy already
+recorded, so startup writes one journald line and no new event. Either way the repo
+is treated as after a `deploy failed`: `current` is left where it is, and webhook
+runs are refused until a rollback or a manual run settles it. A stale `current.tmp`
+is removed, and so is any `releases/<id>` directory that `state.releases` does not
+know about (a crash between the worktree add and its registration).
 
 ### Environment for BUILD and DEPLOY
 
@@ -428,8 +442,9 @@ Deliberately small. Nothing from the service's own environment leaks through.
 
 Plus, for BUILD, every entry of its build env file, and for DEPLOY, every entry of
 its deploy env file. **deployd's own variables win**: an env file cannot replace
-`PATH`, `HOME`, or any `DEPLOY_*` name, and an attempt to do so is one warning line
-in the log. The run log header lists the key names each command received, never
+`PATH`, `HOME`, or set any name beginning `DEPLOY_`, whether or not deployd uses it
+today, and an attempt to do so is one warning line in the log. Both env files are
+read once, when the attempt opens; an edit mid-attempt is seen by the next attempt. The run log header lists the key names each command received, never
 the values.
 
 **The package cache persists by construction.** `HOME` is `/var/lib/deployd`, so
