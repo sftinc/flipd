@@ -75,7 +75,14 @@ test('a clone that fails leaves no bare directory behind', async () => {
 
 test('gitEnv pins the key and known_hosts and leaks nothing else', () => {
   const env = gitEnv({ key: '/k', knownHosts: '/kh', home: '/h' });
-  assert.match(env.GIT_SSH_COMMAND, /-i \/k .*IdentitiesOnly=yes.*UserKnownHostsFile=\/kh.*StrictHostKeyChecking=yes/);
+  assert.match(env.GIT_SSH_COMMAND, /-i '\/k' .*IdentitiesOnly=yes.*UserKnownHostsFile='\/kh'.*StrictHostKeyChecking=yes/);
   assert.equal(env.HOME, '/h');
   assert.deepEqual(Object.keys(env).sort(), ['GIT_SSH_COMMAND', 'GIT_TERMINAL_PROMPT', 'HOME', 'PATH']);
+});
+
+test('gitEnv quotes a key path containing a space as a single ssh argument', () => {
+  const env = gitEnv({ key: '/has space/key', knownHosts: '/kh', home: '/h' });
+  // Single-quoted, so a naive shell split sees exactly one token for -i, not two.
+  assert.match(env.GIT_SSH_COMMAND, /-i '\/has space\/key' -o/);
+  assert.doesNotMatch(env.GIT_SSH_COMMAND, /-i \/has /);
 });
