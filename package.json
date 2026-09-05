@@ -6,5 +6,5 @@
   "private": true,
   "bin": { "remote-deploy": "bin/remote-deploy" },
   "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test test/*.mjs" }
+  "scripts": { "test": "node --test \"test/*.test.mjs\"" }
 }
