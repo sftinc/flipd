@@ -51,10 +51,24 @@ test('add writes the config with placeholders, generates a key, prints the next 
   // the life of that process) or leave it sitting in shell history as part of a
   // `-f config[secret]=...` flag: it must go over stdin instead.
   assert.match(o.out(), /--input -/, 'the webhook is created from a JSON body on stdin, not -f flags');
+  assert.match(o.out(), /--method POST/, 'the recipe posts explicitly, so --input - can never be read as a silent GET');
   assert.doesNotMatch(o.out(), /-f\s+"?config\[secret\]/, 'no gh flag carries config[secret] on argv');
   assert.match(o.out(), /process\.env\.SECRET/, 'the secret reaches node through the environment, not argv');
-  const ghLine = o.out().split('\n').find((l) => /\bgh api\b/.test(l));
-  assert.ok(ghLine && !/\$\(/.test(ghLine), 'the gh api invocation itself takes no command substitution as an argument');
+  const ghApiLines = o.out().split('\n').filter((l) => /\bgh api\b/.test(l));
+  assert.ok(ghApiLines.length > 0, 'the recipe does call gh api');
+  for (const l of ghApiLines) {
+    // The narrowest, regression-proof property: whatever shape the recipe
+    // takes, the *line that actually invokes gh* must carry neither a
+    // command substitution as one of its own arguments (a `-f
+    // config[secret]=$(...)` regression, one line) nor the literal
+    // `config[secret]` flag (the same regression split across two lines --
+    // `SECRET=$(...)` on one, `gh api ... -f "config[secret]=$SECRET"` on
+    // the next -- which the two checks above cannot see because neither the
+    // "no -f config[secret]" pattern nor "$(" needs to appear on this line
+    // for that split form to slip through).
+    assert.ok(!/\$\(/.test(l), `the gh api invocation itself takes no command substitution as an argument: ${l}`);
+    assert.ok(!/config\[secret\]/.test(l), `the gh api invocation line itself never names config[secret]; the secret must reach it only via --input -'s stdin: ${l}`);
+  }
   assert.equal(await add(['git@github.com:o/r.git'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x', '--name', 'Bad Name'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x'], { paths: p, ...io() }), 1, 'no name derivable and none given');

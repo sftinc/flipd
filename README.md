@@ -23,7 +23,8 @@ your own account can use the commands below without `sudo`. See
 ## Add a repo
 
     sudo remote-deploy add git@github.com:you/app.git --root .
-    # paste the deploy key and the webhook it prints (or run the two gh lines)
+    # paste the deploy key and the webhook it prints (or run the deploy-key
+    # command and the webhook pipeline it prints)
     sudo vi /etc/remote-deploy/repos/app.conf        # BUILD and DEPLOY
     remote-deploy check app
 

@@ -39,6 +39,15 @@ fi
 
 [ "$(id -u)" -eq 0 ] || { echo "install.sh must run as root (use sudo)" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
+# $HERE is later embedded in a systemd unit's ExecStart (see step 8) and used
+# unquoted-adjacent in several shell constructs throughout this script; a
+# path containing whitespace, '&', '|', or a backslash is unsafe in at least
+# one of those contexts (word-splitting a systemd ExecStart, or acting as a
+# metacharacter to a text-processing tool). Refuse it once, here, rather than
+# downstream where the failure mode is a mangled or truncated systemd unit.
+case "$HERE" in
+  *[!A-Za-z0-9/_.-]*) echo "install.sh: this clone's path ($HERE) has a character unsafe to embed in a systemd unit; move the clone to a path using only letters, digits, '/', '_', '.', '-'" >&2; exit 1 ;;
+esac
 say() { printf '%s\n' "$*"; }
 
 # 1. prerequisites
@@ -116,7 +125,28 @@ ln -sfn "$HERE/bin/remote-deploy" /usr/local/bin/remote-deploy
 chmod +x "$HERE/bin/remote-deploy"
 say "linked /usr/local/bin/remote-deploy"
 
-# 7. service
+# 7. logrotate
+install -m 0644 "$HERE/remote-deploy.logrotate" /etc/logrotate.d/remote-deploy
+
+# The socket at /run/remote-deploy/remote-deploy.sock and /var/log/remote-deploy
+# are root:remote-deploy on purpose (that is the entire access control for
+# run/rollback/check, and for log) -- so any admin account other than root
+# needs group membership to use remote-deploy without sudo. Printed here,
+# before both the service-liveness gate and the Caddy section below -- either
+# can still abort under `set -e` for reasons that have nothing to do with
+# remote-deploy itself (a bad hand-written conf, or a pre-existing Caddyfile
+# with a syntax error failing both `reload` and `restart`) -- and an operator
+# who never sees this line has no way to tell a permissions problem from a
+# dead service the next time `status` says so.
+ADMIN_USER="${SUDO_USER:-<your-user>}"
+cat <<EOF
+
+so your own login can run 'status', 'check', 'run', 'rollback' and 'log' without sudo:
+  sudo usermod -aG remote-deploy $ADMIN_USER
+this takes effect on your next login (or run 'newgrp remote-deploy' in the current shell).
+EOF
+
+# 8. service
 # The shipped unit hardcodes ExecStart=/opt/remote-deploy/bin/remote-deploy so the
 # static test's assertion means something concrete; a clone anywhere else must not
 # be a hard requirement with no safety value, so when $HERE differs, substitute the
@@ -125,48 +155,47 @@ say "linked /usr/local/bin/remote-deploy"
 if [ "$HERE" = /opt/remote-deploy ]; then
   install -m 0644 "$HERE/remote-deploy.service" /etc/systemd/system/remote-deploy.service
 else
-  sed "s|^ExecStart=.*|ExecStart=$HERE/bin/remote-deploy serve|" "$HERE/remote-deploy.service" > /etc/systemd/system/remote-deploy.service
-  chmod 0644 /etc/systemd/system/remote-deploy.service
+  # Not sed: $HERE lands in a sed *replacement* string, where '&' re-inserts
+  # the whole matched line (silently mangling it, e.g. a clone at /opt/a&b)
+  # and a backslash is also special -- and that output was going through a
+  # truncating `>` redirect, so a broken replacement left the live unit file
+  # at zero bytes with `set -e` aborting before `daemon-reload` ever ran
+  # again, and every later run reproducing the same truncation identically.
+  # awk's ENVIRON does no replacement-metacharacter or backslash-escape
+  # processing (unlike `awk -v`, which does), and writing to a temp file
+  # first means a failure here can never truncate the live unit.
+  UNIT_TMP=$(mktemp)
+  HERE="$HERE" awk '
+    /^ExecStart=/ { print "ExecStart=" ENVIRON["HERE"] "/bin/remote-deploy serve"; next }
+    { print }
+  ' "$HERE/remote-deploy.service" > "$UNIT_TMP"
+  install -m 0644 "$UNIT_TMP" /etc/systemd/system/remote-deploy.service
+  rm -f "$UNIT_TMP"
   say "note: this clone is at $HERE, not /opt/remote-deploy; installed unit's ExecStart was rewritten to $HERE/bin/remote-deploy serve"
 fi
 systemctl daemon-reload
-systemctl enable remote-deploy >/dev/null 2>&1
-# Always (re)start, not just on first install: `enable --now` is a no-op on an
-# already-running unit, so a re-run after `git pull` would otherwise reload the
-# unit file and leave the old code running under a clean-looking transcript.
-systemctl restart remote-deploy
-# Type=simple means `restart` returns the instant the new process execs, which
-# tells us nothing about whether it stayed up -- a bad conf, a permissions
-# mistake, or a missing secret all exit within milliseconds under
-# Restart=on-failure/RestartSec=3, and a transcript that only checked the
-# command's own exit status would call that "enabled" right next to a service
-# crash-looping forever. Give it a moment to settle, then check for real.
-sleep 2
-if ! systemctl is-active --quiet remote-deploy; then
+# stderr stays visible (only stdout's "Created symlink ..." chatter is
+# muted): a masked unit, or a box where systemd is not PID 1, must abort with
+# systemctl's own diagnostic plus a line of our own, not silently under
+# `set -e` with every stream swallowed.
+systemctl enable remote-deploy >/dev/null || { echo "systemctl enable remote-deploy failed (see the systemctl output above); is systemd running as PID 1 on this box?" >&2; exit 1; }
+fail_started() {
   echo "remote-deploy.service did not stay running; check: journalctl -u remote-deploy" >&2
   exit 1
-fi
+}
+# Always (re)start, not just on first install: `enable` alone does not start a
+# unit, and re-running `enable --now` on an already-running unit would be a
+# no-op, leaving old code running under a clean-looking transcript after
+# `git pull`. `restart`'s own exit status catches an ExecStart systemd cannot
+# even launch (a broken path, say); Type=simple means a successful `restart`
+# tells us nothing more than "the new process execs", so a bad conf, a
+# permissions mistake, or a missing secret can still exit within milliseconds
+# under Restart=on-failure/RestartSec=3 -- give it a moment to settle, then
+# check for real. Both failure paths land on the same message.
+systemctl restart remote-deploy || fail_started
+sleep 2
+systemctl is-active --quiet remote-deploy || fail_started
 say "remote-deploy.service is enabled and running"
-
-# 8. logrotate
-install -m 0644 "$HERE/remote-deploy.logrotate" /etc/logrotate.d/remote-deploy
-
-# The socket at /run/remote-deploy/remote-deploy.sock and /var/log/remote-deploy
-# are root:remote-deploy on purpose (that is the entire access control for
-# run/rollback/check, and for log) -- so any admin account other than root
-# needs group membership to use remote-deploy without sudo. Printed here,
-# before the Caddy section below: that section can abort for reasons that have
-# nothing to do with remote-deploy itself (a pre-existing Caddyfile with a
-# syntax error is enough, since both `reload` and `restart` then fail under
-# `set -e`), and an operator who never sees this line has no way to tell a
-# permissions problem from a dead service the next time `status` says so.
-ADMIN_USER="${SUDO_USER:-<your-user>}"
-cat <<EOF
-
-so your own login can run 'status', 'check', 'run', 'rollback' and 'log' without sudo:
-  sudo usermod -aG remote-deploy $ADMIN_USER
-this takes effect on your next login (or run 'newgrp remote-deploy' in the current shell).
-EOF
 
 # 9. Caddy
 CADDY_BLOCK="${HOST:-deploy.example.com} {
