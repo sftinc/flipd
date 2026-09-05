@@ -81,6 +81,34 @@ test('masked values are replaced in lines and output, even across a chunk bounda
   assert.match(text, /next line short/);
 });
 
+test('a line call between two halves of a split secret does not leak either half', async () => {
+  const dir = await tmp();
+  const secret = 's3cretTOKENvalue'; // 16 chars, >= 8
+  const log = await openAttemptLog(dir, { now: fixed, mask: [secret] });
+  await log.output(`Authorization: Bearer ${secret.slice(0, 6)}`); // ends mid-secret
+  await log.line('unrelated interleaved line');
+  await log.output(`${secret.slice(6)}\n`); // carries the rest
+  await log.close();
+  const text = await fs.readFile(log.file, 'utf8');
+  assert.ok(!text.includes(secret));
+  assert.ok(!text.includes(secret.slice(0, 6)));
+  assert.match(text, /unrelated interleaved line/);
+  assert.match(text, /Bearer \*\*\*/);
+});
+
+test('a line call that pushes a masked value across the 4096-byte cut still fully masks it', async () => {
+  const dir = await tmp();
+  const secret = 'SECRETpart12345'; // 15 chars, >= 8; straddles the byte-4096 cut below
+  const prefix = 'a'.repeat(4090);
+  const suffix = 'trailing-text';
+  const log = await openAttemptLog(dir, { now: fixed, mask: [secret] });
+  await log.line(`${prefix}${secret}${suffix}`);
+  await log.close();
+  const text = await fs.readFile(log.file, 'utf8');
+  assert.ok(!text.includes(secret));
+  assert.ok(!text.includes(secret.slice(0, 6)));
+});
+
 test('events append one line each', async () => {
   const dir = await tmp();
   await appendEvent(dir, 'queued', 'x');
