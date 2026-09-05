@@ -83,7 +83,7 @@ takes a log with it.
   events.log                      # one line per event, never pruned by deployd
   <attempt-id>.log                # one file per attempt, complete build and deploy output
 
-/run/deployd.sock                 # the CLI's line to the running service
+/run/deployd/deployd.sock         # the CLI's line to the running service
 ```
 
 `<name>` is derived from the repository URL (`git@github.com:sftinc/aliasroute.git`
@@ -532,7 +532,7 @@ short command.
 
 ### The socket
 
-`/run/deployd.sock`, a Unix socket owned by `deployd:deployd`, mode `0660`. The CLI
+`/run/deployd/deployd.sock`, a Unix socket owned by `deployd:deployd`, mode `0660`, in the directory systemd's `RuntimeDirectory=deployd` creates. The CLI
 sends one JSON line, `{"cmd":"run","name":"aliasroute"}` or
 `{"cmd":"rollback","name":"aliasroute"}`, and reads one JSON line back,
 `{"ok":true,"queued":true}` or `{"ok":false,"error":"..."}`. Only `run` and
