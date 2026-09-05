@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makePrefix, makeSourceRepo, writeRepoConf } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
-import { readState } from '../lib/state.mjs';
+import { readState, writeState } from '../lib/state.mjs';
 import { runEntry, resolveRollbackTarget } from '../lib/run.mjs';
 
 const MAIN = { listen: { host: '127.0.0.1', port: 0 }, publicHost: null, webhookSecret: 's', keep: 5, logKeep: 50, logMaxBytes: 52428800 };
@@ -173,8 +173,11 @@ test('prune runs after failures too, never touching live, previous, pending, or 
   assert.ok(dirs.includes(a), 'queued rollback target survives');
   const s = await t.state();
   assert.ok(dirs.includes(s.live) && dirs.includes(s.previous));
-  assert.ok(dirs.length <= 5, `a, live, previous, and at most KEEP=1 other: ${dirs}`);
-  assert.ok(b === s.previous || dirs.includes(b) || dirs.length <= 4);
+  // Deterministic, not just bounded: with KEEP=1, exactly one release beyond
+  // {a (protected), live, previous} survives, and it is `b` — the most recently
+  // built of the unprotected candidates, since real build timestamps strictly
+  // increase and the oldest one (from the earlier failed-build loop) loses the slot.
+  assert.deepEqual([...dirs].sort(), [a, b, s.previous, s.live].sort(), `exactly a, live, previous, and b survive: ${dirs}`);
 });
 
 test('REPO changed after clone is refused until set-remote', async () => {
@@ -286,6 +289,11 @@ test('shutdown after BUILD does not flip: no new pending during a stop', async (
   assert.equal((await t.state()).pending, null);
   await assert.rejects(t.current());
   // And an abort that lands after BUILD finished but before flip: same answer.
+  // Depends on exactly two ctx.now() calls happening before this one: openAttemptLog's
+  // own id-generation call, then `started = now()` — making the checkout's
+  // `built: now().toISOString()` the third. If lib/log.mjs ever calls `now()` more
+  // than once while opening an attempt, this abort silently lands somewhere else
+  // (most likely inside the id-collision retry loop) and stops testing this race.
   const t2 = await setup({ build: 'true' });
   const ac2 = new AbortController();
   t2.ctx.signal = ac2.signal;
@@ -331,14 +339,96 @@ test('a secret from an env file is masked when BUILD echoes it', async () => {
 
 test('env files reach only their phase, and the log lists key names not values', async () => {
   const t = await setup({ build: 'echo "B=$TOK_B D=$TOK_D" > build.out', deploy: 'echo "B=$TOK_B D=$TOK_D" > deploy.out' });
-  await fs.writeFile(t.p.envFile('r', 'build'), 'TOK_B=secretb\n');
-  await fs.writeFile(t.p.envFile('r', 'deploy'), 'TOK_D=secretd\n');
+  // At least 8 characters (the mask's own length floor) so this line actually
+  // exercises masking rather than passing merely because a 7-char value was
+  // never going to be found in the log regardless of whether it was masked.
+  await fs.writeFile(t.p.envFile('r', 'build'), 'TOK_B=secretbbbb\n');
+  await fs.writeFile(t.p.envFile('r', 'deploy'), 'TOK_D=secretdddd\n');
   await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
   const s = await t.state();
   const rel = path.join(t.p.repoDir('r'), 'releases', s.live);
-  assert.equal((await fs.readFile(path.join(rel, 'build.out'), 'utf8')).trim(), 'B=secretb D=');
-  assert.equal((await fs.readFile(path.join(rel, 'deploy.out'), 'utf8')).trim(), 'B= D=secretd');
+  assert.equal((await fs.readFile(path.join(rel, 'build.out'), 'utf8')).trim(), 'B=secretbbbb D=');
+  assert.equal((await fs.readFile(path.join(rel, 'deploy.out'), 'utf8')).trim(), 'B= D=secretdddd');
   const log = await fs.readFile(s.last.log, 'utf8');
   assert.match(log, /build env.*TOK_B/);
-  assert.ok(!log.includes('secretb') && !log.includes('secretd'));
+  assert.ok(!log.includes('secretbbbb') && !log.includes('secretdddd'));
+});
+
+test('a live sha unreachable in the clone (a force-push, or one pruned away) falls through to build rather than wedging', async () => {
+  const t = await setup({ extra: { WATCH: 'mta/**' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const dir = t.p.repoDir('r');
+  // Simulate what a force-push eventually produces: the recorded live sha is
+  // no longer an object the bare clone can compare against at all (whether
+  // because it was pruned out after becoming unreachable, or never fetched).
+  const before = await readState(dir);
+  before.releases[before.live].sha = '0'.repeat(40);
+  await writeState(dir, before);
+  const sha2 = await t.src.commit({ 'mta/z.mjs': 'z' });
+  const outcome = await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  assert.equal(outcome, 'ok', 'cannot compare -> build, not a wedged fetch failure');
+  const s = await t.state();
+  assert.equal(s.releases[s.live].sha, sha2);
+  const log = await fs.readFile(s.last.log, 'utf8');
+  assert.match(log, /cannot compare against live/);
+  assert.ok(!log.includes('at async'), 'no stack trace journalled for a routine comparison failure');
+  // And it does not keep failing: the next push is unaffected, no wedge.
+  await t.src.commit({ 'mta/z2.mjs': 'z2' });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+});
+
+test('an env-file key that shadows an Object.prototype member is not falsely refused', async () => {
+  const t = await setup({ build: 'echo "$toString|$hasOwnProperty|$constructor" > proto.out' });
+  await fs.writeFile(t.p.envFile('r', 'build'), 'toString=a\nhasOwnProperty=b\nconstructor=c\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const s = await t.state();
+  const out = (await fs.readFile(path.join(t.p.repoDir('r'), 'releases', s.live, 'proto.out'), 'utf8')).trim();
+  assert.equal(out, 'a|b|c');
+  assert.doesNotMatch(await fs.readFile(s.last.log, 'utf8'), /refused/);
+});
+
+test('an env-file key of __proto__ is refused rather than merged into the environment object', async () => {
+  const t = await setup({ build: 'node -e "console.log(Object.getPrototypeOf(process.env) === null)" > proto.out' });
+  await fs.writeFile(t.p.envFile('r', 'build'), '__proto__=polluted\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const s = await t.state();
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /refused __proto__/);
+});
+
+test('ON_FAILURE output masks a build secret too, not only this attempt\'s deploy env', async () => {
+  const t = await setup({
+    build: 'echo "token=$TOK_B" > build.out; exit 1',
+    extra: { ON_FAILURE: 'cat "$DEPLOY_RELEASE_DIR/build.out"' },
+  });
+  await fs.writeFile(t.p.envFile('r', 'build'), 'TOK_B=buildsecret9999\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'build failed');
+  const ev = await t.events();
+  assert.ok(!ev.includes('buildsecret9999'), 'a build secret surfaced via ON_FAILURE must still be masked');
+  assert.match(ev, /notified .* exit 0  token=\*\*\*/);
+});
+
+test('a malformed env line is not echoed verbatim into the attempt log', async () => {
+  const t = await setup();
+  await fs.writeFile(t.p.envFile('r', 'build'), 'thisisasecretlookingvalue\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'build failed');
+  const log = await fs.readFile((await t.state()).last.log, 'utf8');
+  assert.ok(!log.includes('thisisasecretlookingvalue'));
+  assert.match(log, /env file: line 1/);
+});
+
+test('rollback to a release whose directory is missing fails cleanly without flipping current or setting pending', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = (await t.state()).live;
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const later = (await t.state()).live;
+  // Removed out-of-band: still tracked in state, but no longer on disk.
+  await fs.rm(path.join(t.p.repoDir('r'), 'releases', good), { recursive: true, force: true });
+  assert.equal(await runEntry(t.ctx, { kind: 'rollback', name: 'r', target: good }), 'deploy failed');
+  const s = await t.state();
+  assert.equal(s.live, later, 'live is untouched');
+  assert.equal(s.pending, null, 'no dangling pending');
+  assert.equal(await t.current(), later, 'current was never flipped to the missing release');
+  await assert.rejects(fs.lstat(path.join(t.p.repoDir('r'), 'current.tmp')), 'no stray tmp symlink left behind');
 });
