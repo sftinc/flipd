@@ -1,0 +1,10 @@
+{
+  "name": "remote-deploy",
+  "version": "0.1.0",
+  "description": "Build-on-push for a box you own",
+  "type": "module",
+  "private": true,
+  "bin": { "remote-deploy": "bin/remote-deploy" },
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/*.mjs" }
+}
