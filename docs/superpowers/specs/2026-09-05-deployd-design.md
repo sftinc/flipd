@@ -133,7 +133,7 @@ Read once at `deployd serve` start. Changing it means restarting the service.
 | `WEBHOOK_SECRET` | none, required | The one secret every repo's GitHub webhook is configured with |
 | `KEEP` | `5` | Release directories kept per repo, beyond the live and previous ones |
 | `LOG_KEEP` | `50` | Run log files kept per repo; `0` means keep all |
-| `LOG_MAX_BYTES` | `52428800` (50 MiB) | Cap per run log. Past it, command output is discarded, one `[output truncated at 50 MiB]` line is written, and the command keeps running |
+| `LOG_MAX_BYTES` | `52428800` (50 MiB) | Cap per attempt log, on everything written to it. Past it, command output is discarded, one `[output truncated at 50 MiB]` line is written, and the command keeps running; deployd's own lines after that point are still written, but any single line is cut at 4 KiB, so git stderr in an error message cannot blow past the cap |
 
 ### `/etc/deployd/repos/<name>.conf`
 
@@ -394,8 +394,10 @@ Deliberately small. Nothing from the service's own environment leaks through.
 | `DEPLOY_NAME` | the repo's `<name>` |
 
 Plus, for BUILD, every entry of its build env file, and for DEPLOY, every entry of
-its deploy env file. The run log header lists the key names each command received,
-never the values.
+its deploy env file. **deployd's own variables win**: an env file cannot replace
+`PATH`, `HOME`, or any `DEPLOY_*` name, and an attempt to do so is one warning line
+in the log. The run log header lists the key names each command received, never
+the values.
 
 ### Who it runs as
 
@@ -512,7 +514,7 @@ short command.
 |---|---|---|
 | `deployd serve` | is the service | Reads `deployd.conf`, binds the listener and the socket, runs the queue |
 | `deployd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C]` | no | Writes `repos/<name>.conf` (unset values as commented placeholders), generates the key, prints the next steps |
-| `deployd check <name> [--set-remote]` | no | Parses the config, confirms the key exists, creates the bare clone if missing, and compares the clone's `origin` with `REPO` (refuses on mismatch; `--set-remote` repoints it). Runs `git ls-remote` against `REPO` with the key and prints the branch head sha beside the live sha, with `behind` when they differ. No fetch into the shared clone, so it cannot race a run in progress. No build |
+| `deployd check <name> [--set-remote]` | yes | Asks the service to run the check on the worker, so it reads the key as `deployd` and cannot race a run: parses the config, confirms the key exists, creates the bare clone if missing, and compares the clone's `origin` with `REPO` (refuses on mismatch; `--set-remote` repoints it). Runs `git ls-remote` against `REPO` with the key and prints the branch head sha beside the live sha, with `behind` when they differ. No fetch into the shared clone, no build. If the worker is busy, it refuses at once with `busy: running <name>, N queued` rather than waiting behind a deploy |
 | `deployd run <name>` | yes | Queues a forced run: no same-sha check, no watch filter. Builds into a new release directory even if the sha is already live |
 | `deployd rollback <name>` | yes | Resolves the target now and queues a rollback |
 | `deployd status [name]` | no | One row per repo: branch, live sha, last outcome and time, queued or running. `PENDING <release-id>` in capitals when a flip is unconfirmed. If `PUBLIC_HOST` differs from the `HOOK_HOST` recorded in the repo's config by `add`, one extra line says the GitHub webhook still points at the old name |
@@ -537,9 +539,11 @@ sends one JSON line, `{"cmd":"run","name":"aliasroute"}` or
 `{"cmd":"rollback","name":"aliasroute"}`, and reads one JSON line back,
 `{"ok":true,"queued":true}` or `{"ok":false,"error":"..."}`. Only `run` and
 `rollback` use it, because they must go through the queue rather than race a build
-already in progress. `status` and `log` read files and work when the service is down;
-`status` reports queued-or-running by asking the socket and prints `service down`
-if it cannot.
+already in progress, and `check` uses it because only the service can read the deploy
+key. A `check` runs on the worker only when the worker is idle; the socket reply
+carries the check's rows, and the CLI prints them. `status` and `log` read files and
+work when the service is down; `status` reports queued-or-running by asking the
+socket and prints `service down` if it cannot.
 
 ### Permissions
 
@@ -575,8 +579,9 @@ the Caddy steps happens and the Caddy block is printed to paste by hand. It:
    stops here). Writes the block from section 5 to `/etc/caddy/conf.d/deployd.caddy`
    with the given hostname. If `/etc/caddy/Caddyfile` has no `import conf.d/*` line,
    one is appended; nothing else in an existing Caddyfile is touched. Reloads
-   Caddy. Then proves the path: a `GET https://<host>/deploy` must return deployd's
-   404 rather than Caddy's, and the installer prints the result either way.
+   Caddy. Then proves the path: a `POST https://<host>/deploy` carrying a
+   `ping` event signed with the box's own `WEBHOOK_SECRET` must come back `200 pong`,
+   which only deployd can produce. The installer prints the result either way.
 10. Prints the sudoers pattern for deploy commands and, without `--host`, the
     Caddy block to paste.
 
@@ -600,6 +605,7 @@ lib/state.mjs          # read and atomically write state.json
 lib/log.mjs            # run-log and events.log writers
 lib/git.mjs            # fetch, rev-parse, diff, worktree add/remove, over the deploy key
 lib/run.mjs            # the eight steps, and rollback
+lib/check.mjs          # what `deployd check` does, run on the worker
 lib/queue.mjs          # the deduplicating single-worker queue
 lib/hook.mjs           # the HTTP listener and HMAC check
 lib/socket.mjs         # the Unix socket server and client
