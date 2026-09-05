@@ -20,7 +20,7 @@ no npm dependencies, installed once per server.
 |---|---|---|
 | Where the build runs | On the target server itself | GitHub Actions publishing artifacts (a workflow file per repo, and Actions in the path of every deploy); a container per build (Docker on a mail server) |
 | What wakes it up | A GitHub webhook | Polling (up to a minute of latency); a self-hosted Actions runner (GitHub's control plane executing on the box, and the heaviest install) |
-| How it clones | A read-only deploy key per repo, with an optional shared key | A personal access token (an account credential on the box, and it expires); a GitHub App (JWT minting for a tool meant to stay tiny) |
+| How it clones | A read-only deploy key per repo, or one machine user's key for many | A personal access token (an account credential on the box, and it expires); a GitHub App (JWT minting for a tool meant to stay tiny) |
 | Config format | `KEY=value` files | JSON (unpleasant to hand-edit); TOML or YAML (a parser dependency) |
 | Webhook path | `/deploy` | `/deployed` reads as a status endpoint |
 | Listener exposure | Loopback by default, Caddy in front for TLS | Plain HTTP on all interfaces (payloads and deliveries visible to anyone on the path); TLS inside deployd (certificate handling in a one-file tool) |
@@ -29,6 +29,11 @@ no npm dependencies, installed once per server.
 | Disk-space check | None | A MIN_FREE refusal (the box's own health watch owns disk, and deployd's own usage is now bounded) |
 | Run-log retention | Newest fifty per repo, each capped in bytes | Keep forever by default (unbounded disk on a small box) |
 | Run identity | An attempt id per execution, a release id per directory | The sha alone (a forced run at the live sha would replace the directory `current` points at); one id for both (a rollback or a fetch failure has no directory to name) |
+| Failure notification | An optional `ON_FAILURE` command per repo | Nothing (a failed deploy is silent and, because `pending` refuses further pushes, sticky); commit statuses on GitHub (needs an API token, which the deploy-key decision rules out) |
+| Data between releases | Nothing survives; an app that runs from `current` keeps its data elsewhere | A `LINK=` list of shared paths symlinked into each release (thirty lines and a subtle failure when a build overwrites the link; add it when a repo needs it) |
+| Empty push | Builds, bypassing WATCH | Skip (an empty commit is the conventional way to say "redeploy this") |
+| Webhook body cap | 26 MiB, above GitHub's documented 25 MB | 1 MiB (a large merge would get a 413, GitHub does not retry, and the push would be lost with nothing on the box saying so) |
+| Workers | One for the whole box | One per repo (every invariant is already per-name, so it is a contained change; declined because two concurrent `npm ci` runs on a small box that also serves port 25 is the thing to avoid) |
 
 **This retires a rule in `aliasroute/mta/deploy/deploy.sh`.** That script says
 "nothing is built on the box — there is no npm there, on purpose." Building on the box
@@ -57,7 +62,16 @@ laptop-side flow it describes are replaced, not left standing beside a contradic
 - No automatic retry of a failed fetch, build or deploy.
 - No per-branch preview environments. One branch per config file. A second branch is a
   second config file with a different name.
-- No parallel builds. One run at a time on the whole box.
+- No parallel builds. One run at a time on the whole box, because two concurrent
+  `npm ci` runs on a small box that also serves mail is the thing to avoid. Every
+  invariant is per-repo, so a worker per repo is a contained change if a box ever
+  needs it.
+- No commit statuses on GitHub. That needs an API token, and the deploy-key decision
+  keeps account credentials off the box. `ON_FAILURE` is the substitute.
+- Nothing written inside a release directory survives prune: not uploads, not a
+  SQLite file, not a generated cache. An app that runs from `current` keeps its
+  data somewhere else and reaches it by absolute path. That is what every hosted
+  deploy target demands, and it is why the config has no shared-directory key.
 
 ## 2 · On-disk layout
 
@@ -143,6 +157,7 @@ BRANCH=main
 ROOT=mta
 BUILD=npm ci && npm test && node deploy/build.mjs
 DEPLOY=sudo /usr/local/bin/aliasroute-adopt
+ON_FAILURE=curl -fsS -m 10 -d "$DEPLOY_NAME $DEPLOY_OUTCOME $DEPLOY_SHA" https://ntfy.sh/mytopic
 WATCH=mta/** packages/**
 IGNORE=**/*.md docs/**
 BUILD_ENV_FILE=/etc/deployd/env/aliasroute.build
@@ -162,11 +177,12 @@ repos are unaffected.
 | `ROOT` | no | `.` | Directory, relative to the repo root, that BUILD and DEPLOY run in. Must be relative with no `..` component |
 | `BUILD` | yes | | Run through `sh -c` in `releases/<release-id>/<ROOT>` |
 | `DEPLOY` | yes | | Run through `sh -c` in the same directory, after the flip |
+| `ON_FAILURE` | no | | Run through `sh -c` after any outcome other than `ok` or `skipped`, with `DEPLOY_OUTCOME`, `DEPLOY_SHA`, `DEPLOY_ATTEMPT_ID`, `DEPLOY_LOG` and the deploy env file in its environment. Its exit code is logged and otherwise ignored, so a broken notifier cannot change an outcome |
 | `WATCH` | no | everything | Space-separated globs; a push builds only if a changed file matches one |
 | `IGNORE` | no | nothing | Space-separated globs; a changed file matching one does not count |
 | `BUILD_ENV_FILE` | no | `/etc/deployd/env/<name>.build` if it exists | A `KEY=value` file whose entries are added to BUILD's environment only |
 | `DEPLOY_ENV_FILE` | no | `/etc/deployd/env/<name>.deploy` if it exists | A `KEY=value` file whose entries are added to DEPLOY's environment only |
-| `KEY` | no | `/var/lib/deployd/<name>/key` | Private key for the fetch. Set to share one machine-user key across repos |
+| `KEY` | no | `/var/lib/deployd/<name>/key` | Private key for the fetch. A GitHub deploy key attaches to exactly one repository, so a key shared across repos can only be a *machine user's* key: a plain GitHub account with one SSH key, added as a read-only collaborator to each repo. `deployd add --key <path>` writes this and prints the collaborator instruction instead of the deploy-key one |
 | `TIMEOUT` | no | `1200` | Seconds allowed for BUILD, and separately for DEPLOY |
 | `HOOK_HOST` | no | | Written by `add`: the `PUBLIC_HOST` at the time, so `status` can notice when the box has been renamed and the GitHub webhook has not |
 
@@ -250,6 +266,7 @@ visible at startup.
   "live":     "<release-id whose DEPLOY last succeeded, or null>",
   "previous": "<the live before that, or null>",
   "pending":  "<release-id flipped to but not yet confirmed, or null>",
+  "github_id": "<repository.id from the first matched push, or null>",
   "releases": {
     "<release-id>": { "sha": "<40 hex>", "root": "<ROOT>", "deploy": "<DEPLOY>",
                       "built": "<ISO-time>" }
@@ -289,17 +306,23 @@ skip, so a string of broken commits cannot fill the disk with release directorie
    `fetch failed: REPO changed, run deployd check <name> --set-remote`, because
    silently fetching a different repository into a clone full of another one is
    how the wrong bytes get built. Then
-   `git fetch origin <BRANCH>` in the bare clone, over SSH with the configured key,
-   `IdentitiesOnly=yes`, and a `known_hosts` file holding GitHub's published host
-   keys that `install.sh` wrote. The branch head sha is read from the fetch output
-   and must be 40 hex characters. *Failure:* nothing on disk changes. Logged as
+   `git fetch origin +refs/heads/<BRANCH>:refs/heads/<BRANCH>` in the bare clone,
+   over SSH with the configured key, `IdentitiesOnly=yes`, and a `known_hosts` file
+   holding GitHub's published host keys that `install.sh` wrote. **The refspec is
+   not optional.** A bare clone has no `remote.origin.fetch`, so a plain
+   `git fetch origin <BRANCH>` writes only `FETCH_HEAD`, the commit is reachable
+   from no ref, and git's own gc can delete it once its worktree is pruned. The
+   branch head sha is then read with `git rev-parse refs/heads/<BRANCH>` and must be
+   40 hex characters. *Failure:* nothing on disk changes. Logged as
    `fetch failed`.
 
 2. **Compare.** If the sha equals the sha of the `live` release and the run was not
    forced, stop: `skipped <sha>: already live`. Otherwise, if `WATCH` or `IGNORE` is
    set and there is a live release, run `git diff --name-only <live sha>..<sha>`
-   and apply the filter. If no changed file matches, stop: `skipped <sha>: nothing
-   changed under <WATCH>`. A forced run ignores both checks. A repo with no live
+   and apply the filter. **An empty diff builds**: an empty commit is the
+   conventional way to say "redeploy this", so a push whose diff lists no files
+   bypasses the filter. Otherwise, if no changed file matches, stop: `skipped <sha>:
+   nothing changed under <WATCH>`. A forced run ignores both checks. A repo with no live
    release always builds. Comparing against the *live* sha rather than the last
    pushed sha means a change under a watched path is never lost by being skipped
    once; two-dot diff compares trees and does not care whether one sha descends from
@@ -345,6 +368,13 @@ skip, so a string of broken commits cannot fill the disk with release directorie
    attempt closes this way, including a skip and a fetch failure, so every attempt
    has a log with whatever git or the commands said.
 
+9. **Notify.** If the outcome is anything other than `ok` or `skipped` and the repo
+   has `ON_FAILURE`, it runs through `sh -c` in the repo's lib directory with the
+   variables the table below names plus `DEPLOY_OUTCOME`, `DEPLOY_LOG` (the attempt
+   log's path) and the deploy env file, capped at 60 seconds. Its output and exit
+   code go to `events.log` as `notified <attempt-id> exit <code>`. It cannot change
+   the outcome. Startup runs it too for an attempt it finds interrupted.
+
 ### Rollback
 
 `deployd rollback <name>` resolves its target when accepted: if `pending` is set the
@@ -374,7 +404,10 @@ service died between the flip and the confirmation. It is logged to journald and
 that repo's `events.log` as `interrupted <release-id>`, `state.last.outcome` is set
 to `interrupted` if it was not already final, and the repo is treated exactly as
 after a `deploy failed`: `current` is left where it is, and webhook runs are refused
-until a rollback or a manual run settles it. A stale `current.tmp` is removed.
+until a rollback or a manual run settles it. A stale `current.tmp` is removed, and
+so is any `releases/<id>` directory that `state.releases` does not know about (a
+crash between the worktree add and its registration). If the repo has
+`ON_FAILURE`, it runs with `DEPLOY_OUTCOME=interrupted`.
 
 ### Environment for BUILD and DEPLOY
 
@@ -398,6 +431,11 @@ its deploy env file. **deployd's own variables win**: an env file cannot replace
 `PATH`, `HOME`, or any `DEPLOY_*` name, and an attempt to do so is one warning line
 in the log. The run log header lists the key names each command received, never
 the values.
+
+**The package cache persists by construction.** `HOME` is `/var/lib/deployd`, so
+npm's cache lives at `/var/lib/deployd/.npm`, is shared by every repo on the box,
+and is never pruned. A second `npm ci` of the same lockfile is a cache hit, not a
+download. Nothing needs configuring for this.
 
 ### Who it runs as
 
@@ -446,18 +484,27 @@ carry, and nginx with certbot or a Cloudflare tunnel would do in its place. One 
 
 ### Handling a request
 
-1. The body is read raw, capped at 1 MiB. Over the cap: 413, logged, dropped.
+1. The body is read raw, capped at 26 MiB. GitHub's documented payload limit is
+   25 MB and a push event carries up to 2048 commits, so a cap below that would
+   turn a large merge into a 413 that GitHub never retries. Over the cap: 413,
+   logged, dropped.
 2. `X-Hub-Signature-256` must be present and equal to `sha256=` followed by the
    hex HMAC-SHA256 of the raw body under `WEBHOOK_SECRET`, compared in constant time.
    Missing or wrong: 401, one journald line with the source address, nothing else.
 3. `X-GitHub-Event: ping` → 200 `pong`, so the "test delivery" button shows green.
-4. `X-GitHub-Event: push` → the JSON body is parsed; `repository.ssh_url` and `ref`
-   are read. Every repo config is loaded fresh. A config whose `REPO` equals
-   `ssh_url` and whose `BRANCH` equals `ref` with `refs/heads/` stripped is a match.
-   A match is queued and answered 202 `queued <name>` immediately; GitHub gives up
-   after ten seconds, so the response never waits on a run. No match: 200 `ignored`,
-   so a webhook pointed at the wrong server is a log line rather than an error storm.
-   A body that is not JSON or lacks those fields: 400.
+4. `X-GitHub-Event: push` → the JSON body is parsed; `repository.ssh_url`,
+   `repository.id`, `ref` and `deleted` are read. A push with `deleted: true` is a
+   branch deletion, not a request: 200 `ignored`. Every repo config is loaded
+   fresh. A config whose `REPO` equals `ssh_url` and whose `BRANCH` equals `ref`
+   with `refs/heads/` stripped is a match, and the first match records
+   `repository.id` in that repo's state. If no `REPO` matches but a repo's recorded
+   id does, the repository was renamed on GitHub: it is still a match (git follows
+   the redirect), and one `events.log` line and one journald line say `renamed:
+   now <ssh_url>, update REPO`. A match is queued and answered 202 `queued <name>`
+   immediately; GitHub gives up after ten seconds, so the response never waits on a
+   run. No match: 200 `ignored`, with one journald line naming the `ssh_url` and
+   branch, so a webhook pointed at the wrong server or a repo nobody configured is
+   findable. A body that is not JSON or lacks those fields: 400.
 5. Any other event: 200 `ignored`.
 
 Every accepted push is written to the matching repo's `events.log` as
@@ -502,8 +549,14 @@ received, anything that is about deployd rather than about a repo.
 present and nothing else.
 
 **Secrets.** deployd never prints `WEBHOOK_SECRET`, any private key, or the values
-in an env file. It cannot stop a BUILD command from echoing something it should
-not; that is the command's responsibility, as in any CI.
+in an env file. It also **masks** them: every value from either env file that is at
+least eight characters long is replaced by `***` in whatever BUILD, DEPLOY, or
+deployd itself writes to the attempt log, so `set -x`, a stray `env`, or a failing
+`curl` printing its `Authorization` header does not leave the token in a file. This
+is best effort, the same as GitHub Actions' masking: a value that is transformed
+before it is printed is not caught, and a short or low-entropy value is deliberately
+not masked, since masking `true` would corrupt the log for no gain. A BUILD that
+goes out of its way to echo a secret is still the command's responsibility.
 
 ## 7 · The CLI
 
@@ -513,8 +566,8 @@ short command.
 | Command | Needs the service? | What it does |
 |---|---|---|
 | `deployd serve` | is the service | Reads `deployd.conf`, binds the listener and the socket, runs the queue |
-| `deployd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C]` | no | Writes `repos/<name>.conf` (unset values as commented placeholders), generates the key, prints the next steps |
-| `deployd check <name> [--set-remote]` | yes | Asks the service to run the check on the worker, so it reads the key as `deployd` and cannot race a run: parses the config, confirms the key exists, creates the bare clone if missing, and compares the clone's `origin` with `REPO` (refuses on mismatch; `--set-remote` repoints it). Runs `git ls-remote` against `REPO` with the key and prints the branch head sha beside the live sha, with `behind` when they differ. No fetch into the shared clone, no build. If the worker is busy, it refuses at once with `busy: running <name>, N queued` rather than waiting behind a deploy |
+| `deployd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | no | Writes `repos/<name>.conf` (unset values as commented placeholders), generates the key, prints the next steps |
+| `deployd check <name> [--set-remote]` | yes | Asks the service to run the check on the worker, so it reads the key as `deployd` and cannot race a run: parses the config, confirms the key exists, creates the bare clone if missing, and compares the clone's `origin` with `REPO` (refuses on mismatch; `--set-remote` repoints it). Runs `git ls-remote` against `REPO` with the key and prints the branch head sha beside the live sha, with `behind` when they differ. No fetch into the shared clone, no build. If the worker is busy, it refuses at once with `busy: running <name>, N queued` rather than waiting behind a deploy. Exit 0 when everything passes and live is up to date, **4 when live is behind the branch head or `pending` is set**, 1 on any failed row, 3 when the service is down; so `deployd check <name> || notify` in a cron line turns a lost webhook or an unnoticed failed deploy into an alert |
 | `deployd run <name>` | yes | Queues a forced run: no same-sha check, no watch filter. Builds into a new release directory even if the sha is already live |
 | `deployd rollback <name>` | yes | Resolves the target now and queues a rollback |
 | `deployd status [name]` | no | One row per repo: branch, live sha, last outcome and time, queued or running. `PENDING <release-id>` in capitals when a flip is unconfirmed. If `PUBLIC_HOST` differs from the `HOOK_HOST` recorded in the repo's config by `add`, one extra line says the GitHub webhook still points at the old name |
@@ -525,7 +578,10 @@ short command.
 ### What `deployd add` prints
 
 1. The public key, and `gh repo deploy-key add /var/lib/deployd/<name>/key.pub
-   -R <owner>/<repo> --title <hostname>` for those with the GitHub CLI.
+   -R <owner>/<repo> --title <hostname>` for those with the GitHub CLI. With
+   `--key <path>`, no key is generated, `KEY=<path>` is written, and this step
+   instead says to add the machine user as a read-only collaborator, because a
+   deploy key cannot be attached to a second repository.
 2. The webhook settings: URL `https://<host>/deploy` using the hostname
    `install.sh --host` recorded as `PUBLIC_HOST` in `deployd.conf`, content type
    `application/json`, the secret, event "just the push event", and the equivalent
@@ -641,10 +697,15 @@ Node's built-in test runner, no dependencies, `node --test`.
   execution); a prune past `KEEP` after a run of failures, with a queued rollback's
   target surviving; a `pending` left in state at startup, with a stale
   `current.tmp` beside it; a `REPO` edit after the clone exists (refused, then
-  accepted after `--set-remote`); output past `LOG_MAX_BYTES`.
+  accepted after `--set-remote`); output past `LOG_MAX_BYTES`; an empty commit
+  with WATCH set (builds); a failing BUILD with `ON_FAILURE` set (the notifier
+  runs, its exit code is in `events.log`, the outcome is unchanged); a secret from
+  an env file echoed by BUILD (masked in the log).
 - **Webhook.** Start the listener on an ephemeral port and post a signed push
-  payload, an unsigned one, a ping, and a push for an unknown repo. Assert the
-  status codes and what got queued.
+  payload, an unsigned one, a ping, a push for an unknown repo, a push with
+  `deleted: true`, a push whose `ssh_url` is unknown but whose `repository.id`
+  matches a recorded one, and a 26 MiB body. Assert the status codes, what got
+  queued, and the journal lines.
 
 Nothing in the test suite touches GitHub, `/etc`, or `/var`.
 
