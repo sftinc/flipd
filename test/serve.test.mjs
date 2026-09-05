@@ -284,3 +284,35 @@ test('shutdown journals a queued-but-not-yet-started entry that gets dropped', a
   await svc.close();
   assert.ok(lines.some((l) => /\[r2\].*dropped at shutdown/.test(l)), 'the dropped entry is journaled, not silent');
 });
+
+test('shutdown waits, bounded, for a still-running deferred ON_FAILURE notification, and does not lose it silently', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const dir = p.repoDir('r');
+  // Long enough that if shutdown did not actually reach and terminate this,
+  // the marker below would never appear inside this test's lifetime one way
+  // or the other — its absence, together with a settled 'notified' event,
+  // is the proof the job was accounted for rather than merely ignored.
+  const marker = path.join(dir, 'onfailure-ran');
+  await writeRepoConf(p, 'r', { REPO: 'git@github.com:o/r.git', BUILD: 'true', DEPLOY: 'true', ON_FAILURE: `sleep 30 && touch ${marker}` });
+  await fs.mkdir(path.join(dir, 'releases', 'a'), { recursive: true });
+  await writeState(dir, {
+    ...emptyState(),
+    live: 'a',
+    releases: { a: { sha: 'x' } },
+    last: { attempt: 'startup-attempt', outcome: null, finished: null, sha: 'x', release: 'a', log: null },
+  });
+  const svc = await serve({ paths: p, journal: () => {} });
+  // Let the deferred notification actually start (it is fired right after
+  // listen, asynchronously) before shutting down — otherwise this would
+  // test "cancelled before it started" rather than "still running when
+  // shutdown began".
+  await new Promise((r) => setTimeout(r, 200));
+  const t0 = Date.now();
+  await svc.close();
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 10000, `close() must not wait anywhere near the full ON_FAILURE duration (took ${elapsed}ms)`);
+  await assert.rejects(fs.stat(marker), 'the notification was actually terminated by shutdown, not left running to completion');
+  const events = await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
+  assert.match(events, /notified .*exit signal/, 'the job settled and was accounted for before close() returned, not silently abandoned');
+});
