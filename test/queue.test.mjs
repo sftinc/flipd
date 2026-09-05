@@ -114,3 +114,29 @@ test('runner errors do not stop the worker', async () => {
   assert.deepEqual(ran, ['bad', 'good']);
   assert.deepEqual(errors, ['bad']);
 });
+
+test('a throwing onError does not wedge the queue and its error surfaces rather than vanishing', async () => {
+  // A real process-wide uncaughtException is deliberately not used here: node:test
+  // installs its own global handler that flags the whole file as failed the moment
+  // one fires, regardless of a competing listener this test might add — so the only
+  // way to observe "it surfaces" without corrupting the suite's own pass/fail signal
+  // is to intercept the scheduling call itself and inspect what it would have thrown.
+  const ran = [];
+  const scheduled = [];
+  const realQueueMicrotask = globalThis.queueMicrotask;
+  globalThis.queueMicrotask = (fn) => scheduled.push(fn);
+  try {
+    const q = createQueue(
+      async (e) => { ran.push(e.name); throw new Error('primary: ' + e.name); },
+      { onError: () => { throw new Error('onError blew up'); } },
+    );
+    q.enqueue({ kind: 'manual', name: 'a' });
+    q.enqueue({ kind: 'manual', name: 'b' });
+    await q.drain();
+    assert.deepEqual(ran, ['a', 'b'], 'the queue kept running after a throwing onError');
+    assert.equal(scheduled.length, 2, 'both secondary exceptions were scheduled to surface, one per failing entry');
+    for (const fn of scheduled) assert.throws(fn, /onError blew up/);
+  } finally {
+    globalThis.queueMicrotask = realQueueMicrotask;
+  }
+});
