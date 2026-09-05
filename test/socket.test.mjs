@@ -53,6 +53,22 @@ test('the socket is mode 0660 as soon as it is listening', async () => {
   }
 });
 
+test('a journal that throws does not crash the server; a later command still works', async () => {
+  const sock = await newSockPath();
+  const server = await createSocketServer(sock, async () => ({ ok: true }), {
+    journal: () => { throw new Error('EPIPE'); },
+  });
+  try {
+    // Simulate a later server-level error (e.g. EMFILE) whose journaling
+    // itself blows up (e.g. a broken stderr pipe).
+    server.emit('error', Object.assign(new Error('simulated'), { code: 'EMFILE' }));
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(await sendCommand(sock, { cmd: 'still-alive' }), { ok: true });
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
 test('a malformed, non-JSON line does not crash the service; a later command still works', async () => {
   const sock = await newSockPath();
   const server = await createSocketServer(sock, async (msg) => ({ ok: true, echo: msg }));
