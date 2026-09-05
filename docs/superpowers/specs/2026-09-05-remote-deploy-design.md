@@ -1,4 +1,4 @@
-# deployd — build-on-push for a box you own
+# remote-deploy — build-on-push for a box you own
 
 **Status: design, 2026-09-05.** Approved section by section in conversation before
 this file was written. Nothing is implemented. Owner: Winston.
@@ -23,10 +23,10 @@ no npm dependencies, installed once per server.
 | How it clones | A read-only deploy key per repo, or one machine user's key for many | A personal access token (an account credential on the box, and it expires); a GitHub App (JWT minting for a tool meant to stay tiny) |
 | Config format | `KEY=value` files | JSON (unpleasant to hand-edit); TOML or YAML (a parser dependency) |
 | Webhook path | `/deploy` | `/deployed` reads as a status endpoint |
-| Listener exposure | Loopback by default, Caddy in front for TLS | Plain HTTP on all interfaces (payloads and deliveries visible to anyone on the path); TLS inside deployd (certificate handling in a one-file tool) |
+| Listener exposure | Loopback by default, Caddy in front for TLS | Plain HTTP on all interfaces (payloads and deliveries visible to anyone on the path); TLS inside remote-deploy (certificate handling in a one-file tool) |
 | Post-deploy check | None; a DEPLOY command ends with its own health check | A separate VERIFY key (names a pattern DEPLOY can already express, adds a config line) |
 | Secrets for commands | Two env files per repo, build and deploy, found by name | One shared file (a deploy credential would sit in the environment of every `npm ci` install script, though the split is hygiene, not a barrier: see section 3) |
-| Disk-space check | None | A MIN_FREE refusal (the box's own health watch owns disk, and deployd's own usage is now bounded) |
+| Disk-space check | None | A MIN_FREE refusal (the box's own health watch owns disk, and remote-deploy's own usage is now bounded) |
 | Run-log retention | Newest fifty per repo, each capped in bytes | Keep forever by default (unbounded disk on a small box) |
 | Run identity | An attempt id per execution, a release id per directory | The sha alone (a forced run at the live sha would replace the directory `current` points at); one id for both (a rollback or a fetch failure has no directory to name) |
 | Failure notification | An optional `ON_FAILURE` command per repo | Nothing (a failed deploy is silent and, because `pending` refuses further pushes, sticky); commit statuses on GitHub (needs an API token, which the deploy-key decision rules out) |
@@ -37,13 +37,13 @@ no npm dependencies, installed once per server.
 
 **This retires a rule in `aliasroute/mta/deploy/deploy.sh`.** That script says
 "nothing is built on the box — there is no npm there, on purpose." Building on the box
-is the whole point here, so when aliasroute adopts deployd that comment and the
+is the whole point here, so when aliasroute adopts remote-deploy that comment and the
 laptop-side flow it describes are replaced, not left standing beside a contradiction.
 
 ### Non-goals for the first version
 
 - No web UI. The CLI and the log files are the interface.
-- No TLS termination and no source-IP filtering in deployd. The listener binds to
+- No TLS termination and no source-IP filtering in remote-deploy. The listener binds to
   loopback by default and Caddy in front does TLS; `install.sh --host <name>`
   installs and wires Caddy, and without the flag prints the block to paste. Anyone
   who wants the port exposed directly sets `LISTEN` to an
@@ -52,8 +52,8 @@ laptop-side flow it describes are replaced, not left standing beside a contradic
   doorbell property in section 5, but visible). GitHub's hook IP ranges change, so
   a source-IP firewall rule is a habit rather than a one-time step.
 - No polling fallback. GitHub delivers a webhook once and does not retry on its own,
-  and deployd's queue is in memory, so a push that lands while the service is down is
-  lost. Recovery is `deployd run <name>`, and `deployd check <name>`, which prints
+  and remote-deploy's queue is in memory, so a push that lands while the service is down is
+  lost. Recovery is `remote-deploy run <name>`, and `remote-deploy check <name>`, which prints
   the branch head beside the live sha, is the habit that catches it.
 - No isolation between repos on one box. Every BUILD and DEPLOY runs as the same
   user, so any repo's build can read any other repo's deploy key and release
@@ -79,25 +79,25 @@ Three trees, so that config is the only thing ever hand-edited, and wiping state
 takes a log with it.
 
 ```
-/etc/deployd/
-  deployd.conf                    # LISTEN, WEBHOOK_SECRET, KEEP, LOG_KEEP, LOG_MAX_BYTES
+/etc/remote-deploy/
+  remote-deploy.conf                    # LISTEN, WEBHOOK_SECRET, KEEP, LOG_KEEP, LOG_MAX_BYTES
   repos/
     <name>.conf                   # one per repo; the filename is the repo's name
   env/
     <name>.build  <name>.deploy   # optional secrets for BUILD and for DEPLOY
 
-/var/lib/deployd/<name>/
-  key  key.pub                    # the deploy key, generated by `deployd add`
+/var/lib/remote-deploy/<name>/
+  key  key.pub                    # the deploy key, generated by `remote-deploy add`
   git/                            # a bare clone; created by `check` or the first run
   releases/<release-id>/          # a fresh worktree per build; the build happens here
   current -> releases/<release-id>  # flipped only after the build passes
   state.json                      # the present: live, previous, pending, last run
 
-/var/log/deployd/<name>/
-  events.log                      # one line per event, never pruned by deployd
+/var/log/remote-deploy/<name>/
+  events.log                      # one line per event, never pruned by remote-deploy
   <attempt-id>.log                # one file per attempt, complete build and deploy output
 
-/run/deployd/deployd.sock         # the CLI's line to the running service
+/run/remote-deploy/remote-deploy.sock         # the CLI's line to the running service
 ```
 
 `<name>` is derived from the repository URL (`git@github.com:sftinc/aliasroute.git`
@@ -121,13 +121,13 @@ produced. Every attempt has a log; only some attempts make a release.
 A second build of the same sha therefore gets a second directory, and never
 replaces one that `current`, `previous` or a queued rollback points at.
 
-`/etc/deployd` and everything under it is owned `root:deployd`, mode `0750` for
+`/etc/remote-deploy` and everything under it is owned `root:remote-deploy`, mode `0750` for
 directories and `0640` for files: the service can read config, and nothing running
-as `deployd`, which includes every BUILD, can rewrite it.
+as `remote-deploy`, which includes every BUILD, can rewrite it.
 
 ## 3 · Configuration
 
-### `/etc/deployd/deployd.conf`
+### `/etc/remote-deploy/remote-deploy.conf`
 
 ```
 LISTEN=127.0.0.1:9000
@@ -138,7 +138,7 @@ LOG_KEEP=50
 LOG_MAX_BYTES=52428800
 ```
 
-Read once at `deployd serve` start. Changing it means restarting the service.
+Read once at `remote-deploy serve` start. Changing it means restarting the service.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -147,9 +147,9 @@ Read once at `deployd serve` start. Changing it means restarting the service.
 | `WEBHOOK_SECRET` | none, required | The one secret every repo's GitHub webhook is configured with |
 | `KEEP` | `5` | Release directories kept per repo, beyond the live and previous ones |
 | `LOG_KEEP` | `50` | Run log files kept per repo; `0` means keep all |
-| `LOG_MAX_BYTES` | `52428800` (50 MiB) | Cap per attempt log, on everything written to it. Past it, command output is discarded, one `[output truncated at 50 MiB]` line is written, and the command keeps running; deployd's own lines after that point are still written, but any single line is cut at 4 KiB, so git stderr in an error message cannot blow past the cap |
+| `LOG_MAX_BYTES` | `52428800` (50 MiB) | Cap per attempt log, on everything written to it. Past it, command output is discarded, one `[output truncated at 50 MiB]` line is written, and the command keeps running; remote-deploy's own lines after that point are still written, but any single line is cut at 4 KiB, so git stderr in an error message cannot blow past the cap |
 
-### `/etc/deployd/repos/<name>.conf`
+### `/etc/remote-deploy/repos/<name>.conf`
 
 ```
 REPO=git@github.com:sftinc/aliasroute.git
@@ -160,9 +160,9 @@ DEPLOY=sudo /usr/local/bin/aliasroute-adopt
 ON_FAILURE=curl -fsS -m 10 -d "$DEPLOY_NAME $DEPLOY_OUTCOME $DEPLOY_SHA" https://ntfy.sh/mytopic
 WATCH=mta/** packages/**
 IGNORE=**/*.md docs/**
-BUILD_ENV_FILE=/etc/deployd/env/aliasroute.build
-DEPLOY_ENV_FILE=/etc/deployd/env/aliasroute.deploy
-KEY=/etc/deployd/machine.key
+BUILD_ENV_FILE=/etc/remote-deploy/env/aliasroute.build
+DEPLOY_ENV_FILE=/etc/remote-deploy/env/aliasroute.deploy
+KEY=/etc/remote-deploy/machine.key
 TIMEOUT=1200
 ```
 
@@ -172,7 +172,7 @@ repos are unaffected.
 
 | Key | Required | Default | Meaning |
 |---|---|---|---|
-| `REPO` | yes | | SSH clone URL. Matched against the webhook payload's `repository.ssh_url`. Also compared with the bare clone's `origin` on every check and run; a mismatch refuses until `deployd check <name> --set-remote` repoints it |
+| `REPO` | yes | | SSH clone URL. Matched against the webhook payload's `repository.ssh_url`. Also compared with the bare clone's `origin` on every check and run; a mismatch refuses until `remote-deploy check <name> --set-remote` repoints it |
 | `BRANCH` | no | `main` | The one branch that triggers a run |
 | `ROOT` | no | `.` | Directory, relative to the repo root, that BUILD and DEPLOY run in. Must be relative with no `..` component |
 | `BUILD` | yes | | Run through `sh -c` in `releases/<release-id>/<ROOT>` |
@@ -180,9 +180,9 @@ repos are unaffected.
 | `ON_FAILURE` | no | | Run through `sh -c` after any outcome other than `ok` or `skipped`, with `DEPLOY_OUTCOME`, `DEPLOY_SHA`, `DEPLOY_ATTEMPT_ID`, `DEPLOY_LOG` and the deploy env file in its environment. Its exit code is logged and otherwise ignored, so a broken notifier cannot change an outcome |
 | `WATCH` | no | everything | Space-separated globs; a push builds only if a changed file matches one |
 | `IGNORE` | no | nothing | Space-separated globs; a changed file matching one does not count |
-| `BUILD_ENV_FILE` | no | `/etc/deployd/env/<name>.build` if it exists | A `KEY=value` file whose entries are added to BUILD's environment only |
-| `DEPLOY_ENV_FILE` | no | `/etc/deployd/env/<name>.deploy` if it exists | A `KEY=value` file whose entries are added to DEPLOY's environment only |
-| `KEY` | no | `/var/lib/deployd/<name>/key` | Private key for the fetch. A GitHub deploy key attaches to exactly one repository, so a key shared across repos can only be a *machine user's* key: a plain GitHub account with one SSH key, added as a read-only collaborator to each repo. `deployd add --key <path>` writes this and prints the collaborator instruction instead of the deploy-key one |
+| `BUILD_ENV_FILE` | no | `/etc/remote-deploy/env/<name>.build` if it exists | A `KEY=value` file whose entries are added to BUILD's environment only |
+| `DEPLOY_ENV_FILE` | no | `/etc/remote-deploy/env/<name>.deploy` if it exists | A `KEY=value` file whose entries are added to DEPLOY's environment only |
+| `KEY` | no | `/var/lib/remote-deploy/<name>/key` | Private key for the fetch. A GitHub deploy key attaches to exactly one repository, so a key shared across repos can only be a *machine user's* key: a plain GitHub account with one SSH key, added as a read-only collaborator to each repo. `remote-deploy add --key <path>` writes this and prints the collaborator instruction instead of the deploy-key one |
 | `TIMEOUT` | no | `1200` | Seconds allowed for BUILD, and separately for DEPLOY |
 | `HOOK_HOST` | no | | Written by `add`: the `PUBLIC_HOST` at the time, so `status` can notice when the box has been renamed and the GitHub webhook has not |
 
@@ -197,15 +197,15 @@ so a typo like `BUILD_CMD` is caught rather than silently defaulted.
 ### Env files: secrets for the commands, not for the app
 
 ```
-/etc/deployd/env/
+/etc/remote-deploy/env/
   <name>.build      # added to BUILD's environment
   <name>.deploy     # added to DEPLOY's environment
 ```
 
 Same `KEY=value` format, same parser. Found by name, so the ordinary case needs no
 config key; `BUILD_ENV_FILE` and `DEPLOY_ENV_FILE` exist for pointing somewhere
-else. Owned `root:deployd`, mode `0640`: root writes them, the service reads them.
-`sudo deployd env <name> build|deploy` (section 7) creates and edits them with that
+else. Owned `root:remote-deploy`, mode `0640`: root writes them, the service reads them.
+`sudo remote-deploy env <name> build|deploy` (section 7) creates and edits them with that
 ownership so nobody has to remember the path or the mode.
 
 They are split so that a deploy credential is not sitting in the environment of
@@ -216,9 +216,9 @@ other's in its environment.
 
 These files feed the build and deploy *commands*. The application that gets
 deployed keeps reading its own configuration the way it does today, for aliasroute
-the unit's `EnvironmentFile` under `/etc/aliasroute`; deployd never touches that.
+the unit's `EnvironmentFile` under `/etc/aliasroute`; remote-deploy never touches that.
 
-**The limit, stated.** Whatever the `deployd` user can read, every BUILD on the box
+**The limit, stated.** Whatever the `remote-deploy` user can read, every BUILD on the box
 can read, because they are the same user. Both env files are therefore visible to
 every repo's build. A secret that must be invisible to builds goes where the
 aliasroute example already puts it: the DEPLOY command is a sudo'd script, and that
@@ -309,7 +309,7 @@ skip, so a string of broken commits cannot fill the disk with release directorie
 
 1. **Fetch.** If `git/` does not exist, `git clone --bare` creates it. If it exists,
    its `origin` URL is compared with `REPO`; a mismatch ends the attempt with
-   `fetch failed: REPO changed, run deployd check <name> --set-remote`, because
+   `fetch failed: REPO changed, run remote-deploy check <name> --set-remote`, because
    silently fetching a different repository into a clone full of another one is
    how the wrong bytes get built. Then
    `git fetch origin +refs/heads/<BRANCH>:refs/heads/<BRANCH>` in the bare clone,
@@ -355,11 +355,11 @@ skip, so a string of broken commits cannot fill the disk with release directorie
    `pending` is cleared, outcome `ok`. *Failure:* `current` stays pointed at the new
    release because the build was good, `live` and `previous` are unchanged,
    `pending` stays set, outcome `deploy failed`, and the last line of the run log is
-   `deployd rollback <name>`. This is the one failure that can leave a service
-   half-adopted, so it is the loudest: it is the only outcome `deployd status`
+   `remote-deploy rollback <name>`. This is the one failure that can leave a service
+   half-adopted, so it is the loudest: it is the only outcome `remote-deploy status`
    prints in capitals, and while `pending` is set, webhook-triggered runs for that
    repo are refused with an `events.log` line until a rollback or a manual run
-   settles it. deployd believes only the exit code; a DEPLOY that prints a warning
+   settles it. remote-deploy believes only the exit code; a DEPLOY that prints a warning
    and exits zero is a success.
 
 7. **Prune.** Release directories are listed newest-first. `live`, `previous`,
@@ -387,7 +387,7 @@ skip, so a string of broken commits cannot fill the disk with release directorie
 
 ### Rollback
 
-`deployd rollback <name>` resolves its target when accepted: if `pending` is set the
+`remote-deploy rollback <name>` resolves its target when accepted: if `pending` is set the
 target is `live` (undo the deploy that did not confirm); otherwise the target is
 `previous`. It queues an attempt whose steps are 0, 5 and 6, using the target's
 stored `root` and `deploy`. Its log is named by its own attempt id and its header
@@ -404,12 +404,12 @@ target's directory cannot go missing afterwards because prune protects it.
 
 BUILD and DEPLOY are spawned in their own process group. On timeout, or when the
 service receives SIGTERM, the whole group gets SIGTERM, ten seconds of grace, then
-SIGKILL, and deployd waits for the child to close before writing the outcome. A
+SIGKILL, and remote-deploy waits for the child to close before writing the outcome. A
 run killed by service shutdown is recorded as `interrupted`.
 
 ### Startup
 
-`deployd serve` reads every repo's `state.json`. **`last.finished` being null is the
+`remote-deploy serve` reads every repo's `state.json`. **`last.finished` being null is the
 signal**: `state.last` is written to disk when an attempt opens and finalised when
 it closes, so a null `finished` means the service died inside that attempt. That
 attempt is recorded as `interrupted` in `state.last`, in journald, and in the
@@ -430,7 +430,7 @@ Deliberately small. Nothing from the service's own environment leaks through.
 | Variable | Value |
 |---|---|
 | `PATH` | `/usr/local/bin:/usr/bin:/bin` |
-| `HOME` | `/var/lib/deployd` |
+| `HOME` | `/var/lib/remote-deploy` |
 | `DEPLOY_REPO` | the `REPO` value |
 | `DEPLOY_BRANCH` | the `BRANCH` value |
 | `DEPLOY_SHA` | the sha of the release being built, or on rollback, flipped to |
@@ -441,32 +441,32 @@ Deliberately small. Nothing from the service's own environment leaks through.
 | `DEPLOY_NAME` | the repo's `<name>` |
 
 Plus, for BUILD, every entry of its build env file, and for DEPLOY, every entry of
-its deploy env file. **deployd's own variables win**: an env file cannot replace
-`PATH`, `HOME`, or set any name beginning `DEPLOY_`, whether or not deployd uses it
+its deploy env file. **remote-deploy's own variables win**: an env file cannot replace
+`PATH`, `HOME`, or set any name beginning `DEPLOY_`, whether or not remote-deploy uses it
 today, and an attempt to do so is one warning line in the log. Both env files are
 read once, when the attempt opens; an edit mid-attempt is seen by the next attempt. The run log header lists the key names each command received, never
 the values.
 
-**The package cache persists by construction.** `HOME` is `/var/lib/deployd`, so
-npm's cache lives at `/var/lib/deployd/.npm`, is shared by every repo on the box,
+**The package cache persists by construction.** `HOME` is `/var/lib/remote-deploy`, so
+npm's cache lives at `/var/lib/remote-deploy/.npm`, is shared by every repo on the box,
 and is never pruned. A second `npm ci` of the same lockfile is a cache hit, not a
 download. Nothing needs configuring for this.
 
 ### Who it runs as
 
-The service, the fetch, the build and the deploy all run as the `deployd` user. Never
+The service, the fetch, the build and the deploy all run as the `remote-deploy` user. Never
 root, so that an `npm ci` pulling an unvetted package never executes with root. A
 `DEPLOY` command that must restart a unit or write under `/etc` does so with `sudo`,
 and `install.sh` prints the shape of the sudoers line to add: one script, no
-password, for the `deployd` user only. The `aliasroute-adopt` example above is that
+password, for the `remote-deploy` user only. The `aliasroute-adopt` example above is that
 pattern.
 
 ## 5 · The webhook
 
 ### The one property everything rests on
 
-The payload is a doorbell, not data. deployd reads two fields from it: which
-repository and which branch. The sha that is built comes from deployd's own `git
+The payload is a doorbell, not data. remote-deploy reads two fields from it: which
+repository and which branch. The sha that is built comes from remote-deploy's own `git
 fetch`, never from the payload. A forged, replayed or tampered webhook can at most
 cause a fetch and a build of the real branch head, which is idempotent.
 
@@ -491,9 +491,9 @@ with both at top level answers every webhook with a 404.
 
 Caddy obtains and renews the certificate on its own, and the webhook URL in GitHub
 is `https://deploy.example.com/deploy`. `install.sh --host` writes this block and
-reloads Caddy (section 8). deployd itself speaks plain HTTP and never sees a
+reloads Caddy (section 8). remote-deploy itself speaks plain HTTP and never sees a
 certificate. Caddy is a separate program, one apt package with its own service; it
-is here because certificate issue and renewal is the one job deployd should not
+is here because certificate issue and renewal is the one job remote-deploy should not
 carry, and nginx with certbot or a Cloudflare tunnel would do in its place. One path, `/deploy`, accepting `POST` only. Anything else is a
 404 with an empty body.
 
@@ -536,7 +536,7 @@ shared secret does not widen what an attacker can do.
 
 Three places, each with one job.
 
-**One file per attempt.** `/var/log/deployd/<name>/<attempt-id>.log`, for example
+**One file per attempt.** `/var/log/remote-deploy/<name>/<attempt-id>.log`, for example
 `2026-09-05T08-14-02Z.log`. Plain text, append-only, written as the run happens so a `tail -f` shows a build in
 progress. Contents, in order:
 
@@ -549,24 +549,24 @@ progress. Contents, in order:
 - a summary: outcome, exit codes, duration
 - on failure, the exact command to type next
 
-**One index per repo.** `/var/log/deployd/<name>/events.log`. One line per event:
+**One index per repo.** `/var/log/remote-deploy/<name>/events.log`. One line per event:
 `<ISO-time> <event> <details>`. Events: `webhook`, `queued`, `started`, `finished`,
 `skipped`, `fetch-failed`, `refused`, `interrupted`, `rollback`. Every line about an
 attempt names its log file; a skip or a fetch failure has a short one holding what
-git said. Never pruned by deployd; `install.sh` drops a logrotate rule that rotates it monthly and keeps
+git said. Never pruned by remote-deploy; `install.sh` drops a logrotate rule that rotates it monthly and keeps
 twelve.
 
 **The service talks to journald.** Startup, port bound, each config loaded or
 rejected, each webhook rejected with source address and reason, socket commands
-received, anything that is about deployd rather than about a repo.
+received, anything that is about remote-deploy rather than about a repo.
 
 **State is not a log.** `state.json` is described in section 4. It holds the
 present and nothing else.
 
-**Secrets.** deployd never prints `WEBHOOK_SECRET`, any private key, or the values
+**Secrets.** remote-deploy never prints `WEBHOOK_SECRET`, any private key, or the values
 in an env file. It also **masks** them: every value from either env file that is at
 least eight characters long is replaced by `***` in whatever BUILD, DEPLOY, or
-deployd itself writes to the attempt log, so `set -x`, a stray `env`, or a failing
+remote-deploy itself writes to the attempt log, so `set -x`, a stray `env`, or a failing
 `curl` printing its `Authorization` header does not leave the token in a file. This
 is best effort, the same as GitHub Actions' masking: a value that is transformed
 before it is printed is not caught, and a short or low-entropy value is deliberately
@@ -575,37 +575,37 @@ goes out of its way to echo a secret is still the command's responsibility.
 
 ## 7 · The CLI
 
-One executable, `deployd`. `serve` is the long-running service; everything else is a
+One executable, `remote-deploy`. `serve` is the long-running service; everything else is a
 short command.
 
 | Command | Needs the service? | What it does |
 |---|---|---|
-| `deployd serve` | is the service | Reads `deployd.conf`, binds the listener and the socket, runs the queue |
-| `deployd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | no | Writes `repos/<name>.conf` (unset values as commented placeholders), generates the key, prints the next steps |
-| `deployd check <name> [--set-remote]` | yes | Asks the service to run the check on the worker, so it reads the key as `deployd` and cannot race a run: parses the config, confirms the key exists, creates the bare clone if missing, and compares the clone's `origin` with `REPO` (refuses on mismatch; `--set-remote` repoints it). Runs `git ls-remote` against `REPO` with the key and prints the branch head sha beside the live sha, with `behind` when they differ. No fetch into the shared clone, no build. If the worker is busy, it refuses at once with `busy: running <name>, N queued` rather than waiting behind a deploy. Exit 0 when everything passes and live is up to date, **4 when live is behind the branch head or `pending` is set**, 1 on any failed row, 3 when the service is down; so `deployd check <name> || notify` in a cron line turns a lost webhook or an unnoticed failed deploy into an alert |
-| `deployd run <name>` | yes | Queues a forced run: no same-sha check, no watch filter. Builds into a new release directory even if the sha is already live |
-| `deployd rollback <name>` | yes | Resolves the target now and queues a rollback |
-| `deployd status [name]` | no | One row per repo: branch, live sha, last outcome and time, queued or running. `PENDING <release-id>` in capitals when a flip is unconfirmed. If `PUBLIC_HOST` differs from the `HOOK_HOST` recorded in the repo's config by `add`, one extra line says the GitHub webhook still points at the old name |
-| `deployd log <name> [--follow]` | no | Prints the latest run log, or tails the one in progress |
-| `deployd env <name> build\|deploy [--set K=V] [--unset K]` | no | Creates the env file if missing (`root:deployd`, `0640`) and opens it in `$EDITOR`, or edits one line with `--set`/`--unset`. Re-parses on save and re-opens on a malformed line. Prints the key names, never the values |
-| `deployd remove <name>` | no | Refuses if the service reports that name queued or running; otherwise deletes the config file only and prints the `rm` lines for state and logs |
+| `remote-deploy serve` | is the service | Reads `remote-deploy.conf`, binds the listener and the socket, runs the queue |
+| `remote-deploy add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | no | Writes `repos/<name>.conf` (unset values as commented placeholders), generates the key, prints the next steps |
+| `remote-deploy check <name> [--set-remote]` | yes | Asks the service to run the check on the worker, so it reads the key as `remote-deploy` and cannot race a run: parses the config, confirms the key exists, creates the bare clone if missing, and compares the clone's `origin` with `REPO` (refuses on mismatch; `--set-remote` repoints it). Runs `git ls-remote` against `REPO` with the key and prints the branch head sha beside the live sha, with `behind` when they differ. No fetch into the shared clone, no build. If the worker is busy, it refuses at once with `busy: running <name>, N queued` rather than waiting behind a deploy. Exit 0 when everything passes and live is up to date, **4 when live is behind the branch head or `pending` is set**, 1 on any failed row, 3 when the service is down; so `remote-deploy check <name> || notify` in a cron line turns a lost webhook or an unnoticed failed deploy into an alert |
+| `remote-deploy run <name>` | yes | Queues a forced run: no same-sha check, no watch filter. Builds into a new release directory even if the sha is already live |
+| `remote-deploy rollback <name>` | yes | Resolves the target now and queues a rollback |
+| `remote-deploy status [name]` | no | One row per repo: branch, live sha, last outcome and time, queued or running. `PENDING <release-id>` in capitals when a flip is unconfirmed. If `PUBLIC_HOST` differs from the `HOOK_HOST` recorded in the repo's config by `add`, one extra line says the GitHub webhook still points at the old name |
+| `remote-deploy log <name> [--follow]` | no | Prints the latest run log, or tails the one in progress |
+| `remote-deploy env <name> build\|deploy [--set K=V] [--unset K]` | no | Creates the env file if missing (`root:remote-deploy`, `0640`) and opens it in `$EDITOR`, or edits one line with `--set`/`--unset`. Re-parses on save and re-opens on a malformed line. Prints the key names, never the values |
+| `remote-deploy remove <name>` | no | Refuses if the service reports that name queued or running; otherwise deletes the config file only and prints the `rm` lines for state and logs |
 
-### What `deployd add` prints
+### What `remote-deploy add` prints
 
-1. The public key, and `gh repo deploy-key add /var/lib/deployd/<name>/key.pub
+1. The public key, and `gh repo deploy-key add /var/lib/remote-deploy/<name>/key.pub
    -R <owner>/<repo> --title <hostname>` for those with the GitHub CLI. With
    `--key <path>`, no key is generated, `KEY=<path>` is written, and this step
    instead says to add the machine user as a read-only collaborator, because a
    deploy key cannot be attached to a second repository.
 2. The webhook settings: URL `https://<host>/deploy` using the hostname
-   `install.sh --host` recorded as `PUBLIC_HOST` in `deployd.conf`, content type
+   `install.sh --host` recorded as `PUBLIC_HOST` in `remote-deploy.conf`, content type
    `application/json`, the secret, event "just the push event", and the equivalent
    `gh api repos/<owner>/<repo>/hooks` command.
-3. "Edit `/etc/deployd/repos/<name>.conf`, then run `deployd check <name>`."
+3. "Edit `/etc/remote-deploy/repos/<name>.conf`, then run `remote-deploy check <name>`."
 
 ### The socket
 
-`/run/deployd/deployd.sock`, a Unix socket owned by `deployd:deployd`, mode `0660`, in the directory systemd's `RuntimeDirectory=deployd` creates. The CLI
+`/run/remote-deploy/remote-deploy.sock`, a Unix socket owned by `remote-deploy:remote-deploy`, mode `0660`, in the directory systemd's `RuntimeDirectory=remote-deploy` creates. The CLI
 sends one JSON line, `{"cmd":"run","name":"aliasroute"}` or
 `{"cmd":"rollback","name":"aliasroute"}`, and reads one JSON line back,
 `{"ok":true,"queued":true}` or `{"ok":false,"error":"..."}`. Only `run` and
@@ -618,41 +618,41 @@ socket and prints `service down` if it cannot.
 
 ### Permissions
 
-`/etc/deployd` is root-owned, so `add`, `remove` and `env` are run with sudo. `add` creates
-the key under `/var/lib/deployd/<name>/` and chowns it to `deployd`, mode `0600`.
-Everything else works for any user in the `deployd` group.
+`/etc/remote-deploy` is root-owned, so `add`, `remove` and `env` are run with sudo. `add` creates
+the key under `/var/lib/remote-deploy/<name>/` and chowns it to `remote-deploy`, mode `0600`.
+Everything else works for any user in the `remote-deploy` group.
 
 ## 8 · Install
 
-`git clone` this repository to `/opt/deployd`, then
-`sudo /opt/deployd/install.sh --host deploy.example.com`. The flag is the hostname
+`git clone` this repository to `/opt/remote-deploy`, then
+`sudo /opt/remote-deploy/install.sh --host deploy.example.com`. The flag is the hostname
 GitHub will call, and it must already resolve to the box, because Caddy will ask
 Let's Encrypt for a certificate in that name. Without the flag, everything except
 the Caddy steps happens and the Caddy block is printed to paste by hand. It:
 
 1. Checks for `node` (20 or newer) and `git`; refuses with a plain message otherwise.
-2. Creates the `deployd` system user and group, home `/var/lib/deployd`.
-3. Creates the three trees: `/etc/deployd`, `repos/` and `env/` owned
-   `root:deployd` mode `0750`; `/var/lib/deployd` and `/var/log/deployd` owned
-   `deployd:deployd`.
-4. Writes `/etc/deployd/deployd.conf`, `root:deployd` mode `0640`, with a generated
+2. Creates the `remote-deploy` system user and group, home `/var/lib/remote-deploy`.
+3. Creates the three trees: `/etc/remote-deploy`, `repos/` and `env/` owned
+   `root:remote-deploy` mode `0750`; `/var/lib/remote-deploy` and `/var/log/remote-deploy` owned
+   `remote-deploy:remote-deploy`.
+4. Writes `/etc/remote-deploy/remote-deploy.conf`, `root:remote-deploy` mode `0640`, with a generated
    `WEBHOOK_SECRET` if the file does not exist. Never overwrites an existing one.
-5. Writes `/var/lib/deployd/.ssh/known_hosts` from GitHub's published host keys
+5. Writes `/var/lib/remote-deploy/.ssh/known_hosts` from GitHub's published host keys
    (fetched from `https://api.github.com/meta`; refuses if unreachable rather than
    writing an empty file).
-6. Installs `deployd.service` (`User=deployd`, `ExecStart=/opt/deployd/bin/deployd
-   serve`, `RuntimeDirectory=deployd`, restart on failure) and enables it.
-7. Symlinks `/usr/local/bin/deployd` to `/opt/deployd/bin/deployd`.
-8. Writes `/etc/logrotate.d/deployd`: `events.log` monthly, keep twelve, compress.
+6. Installs `remote-deploy.service` (`User=remote-deploy`, `ExecStart=/opt/remote-deploy/bin/remote-deploy
+   serve`, `RuntimeDirectory=remote-deploy`, restart on failure) and enables it.
+7. Symlinks `/usr/local/bin/remote-deploy` to `/opt/remote-deploy/bin/remote-deploy`.
+8. Writes `/etc/logrotate.d/remote-deploy`: `events.log` monthly, keep twelve, compress.
 9. With `--host`: installs Caddy from the distro package if `caddy` is not on the
    path (Debian and Ubuntu via apt, from Caddy's own repository as its docs
    describe; any other distro gets a message naming the package to install and
-   stops here). Writes the block from section 5 to `/etc/caddy/conf.d/deployd.caddy`
+   stops here). Writes the block from section 5 to `/etc/caddy/conf.d/remote-deploy.caddy`
    with the given hostname. If `/etc/caddy/Caddyfile` has no `import conf.d/*` line,
    one is appended; nothing else in an existing Caddyfile is touched. Reloads
    Caddy. Then proves the path: a `POST https://<host>/deploy` carrying a
    `ping` event signed with the box's own `WEBHOOK_SECRET` must come back `200 pong`,
-   which only deployd can produce. The installer prints the result either way.
+   which only remote-deploy can produce. The installer prints the result either way.
 10. Prints the sudoers pattern for deploy commands and, without `--host`, the
     Caddy block to paste.
 
@@ -660,29 +660,29 @@ Re-running it is safe: every step is skip-if-present, and `--host` with the same
 name rewrites an identical snippet and reloads. `--host` with a different name
 replaces the snippet, which is the way to move the webhook to a new hostname.
 
-Upgrading deployd is `git pull` in `/opt/deployd` and `systemctl restart deployd`.
+Upgrading remote-deploy is `git pull` in `/opt/remote-deploy` and `systemctl restart remote-deploy`.
 On SIGTERM the service kills the command in progress, records the attempt's outcome
 as `interrupted` in its log and in `state.json`, leaves `pending` set if the flip had
 happened, and exits. The queue is in memory and is lost. Restart when
-`deployd status` shows nothing running.
+`remote-deploy status` shows nothing running.
 
 ## 9 · Code shape
 
 ```
-bin/deployd            # the entry point: parses argv, dispatches to a subcommand
-lib/config.mjs         # KEY=value parser; loads deployd.conf and repos/*.conf
+bin/remote-deploy            # the entry point: parses argv, dispatches to a subcommand
+lib/config.mjs         # KEY=value parser; loads remote-deploy.conf and repos/*.conf
 lib/glob.mjs           # WATCH/IGNORE pattern → RegExp
 lib/state.mjs          # read and atomically write state.json
 lib/log.mjs            # run-log and events.log writers
 lib/git.mjs            # fetch, rev-parse, diff, worktree add/remove, over the deploy key
 lib/run.mjs            # the eight steps, and rollback
-lib/check.mjs          # what `deployd check` does, run on the worker
+lib/check.mjs          # what `remote-deploy check` does, run on the worker
 lib/queue.mjs          # the deduplicating single-worker queue
 lib/hook.mjs           # the HTTP listener and HMAC check
 lib/socket.mjs         # the Unix socket server and client
 lib/cli/*.mjs          # one file per subcommand
 install.sh
-deployd.service
+remote-deploy.service
 ```
 
 Each module has one job and can be tested alone: the parser with strings, the glob
@@ -735,7 +735,7 @@ Out of scope for this spec's implementation, recorded so the shape is not lost.
   directory the units are running from; install units, `daemon-reload`, flip
   `/opt/aliasroute/current`, prune `/opt/aliasroute` as the script does today,
   optional restart, report drift); the laptop-side bundling becomes the `BUILD`
-  command. deployd reads only the exit code, so `aliasroute-adopt` must exit
+  command. remote-deploy reads only the exit code, so `aliasroute-adopt` must exit
   non-zero whenever it did not leave the box in the state it claims. Today's script
   exits zero on drift without `--restart` by design; that remains fine only if
   "flipped but not restarted" is the state it claims.

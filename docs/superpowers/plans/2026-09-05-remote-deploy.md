@@ -1,19 +1,19 @@
-# deployd Implementation Plan
+# remote-deploy Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A one-file-per-module Node service that turns a GitHub push into fetch, build, flip, deploy on the server itself, with a truthful rollback and a log per attempt.
 
-**Architecture:** A systemd service (`deployd serve`) runs an HTTP webhook listener on loopback, a Unix socket for the CLI, and a single-worker queue. Each queue entry becomes an *attempt* that walks the spec's eight steps against one repo's bare clone, release worktrees, `state.json`, and log files. Short CLI subcommands read the same files and, for `run` and `rollback`, talk to the service over the socket.
+**Architecture:** A systemd service (`remote-deploy serve`) runs an HTTP webhook listener on loopback, a Unix socket for the CLI, and a single-worker queue. Each queue entry becomes an *attempt* that walks the spec's eight steps against one repo's bare clone, release worktrees, `state.json`, and log files. Short CLI subcommands read the same files and, for `run` and `rollback`, talk to the service over the socket.
 
 **Tech Stack:** Node 20+ (ESM, `node:test`, zero npm dependencies), git, sh, systemd, Caddy (optional, wired by `install.sh --host`).
 
-**Spec:** `docs/superpowers/specs/2026-09-05-deployd-design.md`
+**Spec:** `docs/superpowers/specs/2026-09-05-remote-deploy-design.md`
 
 ## Global Constraints
 
 - Node 20 or newer. No npm dependencies at all: `package.json` has no `dependencies` and no `devDependencies`.
-- Every path deployd touches is derived from one prefix so tests never touch `/etc`, `/var`, or `/run`: `DEPLOYD_PREFIX` (default `/`) prefixes `etc/deployd`, `var/lib/deployd`, `var/log/deployd`, `run/deployd/deployd.sock`.
+- Every path remote-deploy touches is derived from one prefix so tests never touch `/etc`, `/var`, or `/run`: `REMOTE_DEPLOY_PREFIX` (default `/`) prefixes `etc/remote-deploy`, `var/lib/remote-deploy`, `var/log/remote-deploy`, `run/remote-deploy/remote-deploy.sock`.
 - Config is `KEY=value`: line trimmed, key trimmed, value is everything after the first `=` trimmed, no quoting or expansion; blank and `#` lines ignored; unknown keys are an error.
 - Repo name must match `^[a-z0-9][a-z0-9._-]{0,63}$`. `ROOT` must be relative with no `..` component.
 - Attempt id: UTC second as `YYYY-MM-DDTHH-MM-SSZ`, suffixed `-2`, `-3`… on collision, allocated by exclusive creation of the log file. Release id: `<attempt-id>-<7-char sha>`.
@@ -22,7 +22,7 @@
 - Event names, exactly: `webhook`, `queued`, `started`, `finished`, `skipped`, `fetch-failed`, `refused`, `interrupted`, `rollback`, `notified`, `renamed`.
 - Command environment: `PATH=/usr/local/bin:/usr/bin:/bin`, `HOME=<lib dir>`, `DEPLOY_REPO`, `DEPLOY_BRANCH`, `DEPLOY_SHA`, `DEPLOY_PREVIOUS_SHA`, `DEPLOY_RELEASE_DIR`, `DEPLOY_RELEASE_ID`, `DEPLOY_ATTEMPT_ID`, `DEPLOY_NAME`, plus the phase's env file. Nothing else.
 - Defaults: `LISTEN=127.0.0.1:9000`, `KEEP=5`, `LOG_KEEP=50`, `LOG_MAX_BYTES=52428800`, `BRANCH=main`, `ROOT=.`, `TIMEOUT=1200`.
-- deployd never prints `WEBHOOK_SECRET`, a private key, or env-file values. Log the key names only.
+- remote-deploy never prints `WEBHOOK_SECRET`, a private key, or env-file values. Log the key names only.
 - Commit after every task. Commit messages end with the line `Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj`.
 
 ---
@@ -31,8 +31,8 @@
 
 ```
 package.json                 type=module, "test": "node --test test/"
-bin/deployd                  entry: argv → lib/cli/<cmd>.mjs
-lib/paths.mjs                prefix → every path deployd uses; NAME_RE, validated in every per-repo path
+bin/remote-deploy                  entry: argv → lib/cli/<cmd>.mjs
+lib/paths.mjs                prefix → every path remote-deploy uses; NAME_RE, validated in every per-repo path
 lib/config.mjs               parseKV, parseMain, parseRepo, loadRepo(s), loadEnvFile
 lib/glob.mjs                 globToRegExp, anyMatches
 lib/state.mjs                emptyState, readState, writeState (atomic)
@@ -41,15 +41,15 @@ lib/exec.mjs                 runCommand: sh -c in a process group, timeout, abor
 lib/git.mjs                  git wrappers over a deploy key: clone, fetch, diff, worktree, ls-remote
 lib/queue.mjs                createQueue: typed entries, dedupe, run-again-after
 lib/run.mjs                  runEntry: steps 0–8 and rollback; resolveRollbackTarget
-lib/check.mjs                runCheck: what `deployd check` does, run on the worker
+lib/check.mjs                runCheck: what `remote-deploy check` does, run on the worker
 lib/hook.mjs                 verifySignature, createHookServer
 lib/socket.mjs               createSocketServer, sendCommand
 lib/serve.mjs                serve(): reconcile, wire hook + socket + queue, SIGTERM
-lib/owner.mjs                chownDeployd (no-op unless root)
+lib/owner.mjs                chownRemoteDeploy (no-op unless root)
 lib/cli/{serve,add,check,run,rollback,status,log,env,remove}.mjs
 test/helpers.mjs             temp prefix, bare repo with commits, config writers
 test/*.test.mjs              one per module, plus run.integration.test.mjs
-install.sh, deployd.service, deployd.logrotate, README.md
+install.sh, remote-deploy.service, remote-deploy.logrotate, README.md
 ```
 
 Every `lib/cli/*.mjs` exports `default async function (args, ctx)` returning an exit code, where `args` is `process.argv.slice(3)` and `ctx = { paths, stdout, stderr }`. Every lib module takes a `paths` object rather than reading globals, so tests pass a temp prefix.
@@ -59,7 +59,7 @@ Every `lib/cli/*.mjs` exports `default async function (args, ctx)` returning an 
 ### Task 1: Scaffold, entry point, paths
 
 **Files:**
-- Create: `package.json`, `bin/deployd`, `lib/paths.mjs`, `test/paths.test.mjs`, `.gitignore`
+- Create: `package.json`, `bin/remote-deploy`, `lib/paths.mjs`, `test/paths.test.mjs`, `.gitignore`
 
 **Interfaces:**
 - Produces: `NAME_RE`, `checkName(name)` (throws with `code: 'EBADNAME'`), and `paths(prefix?) → { prefix, etc, mainConf, reposDir, envDir, lib, log, sock, knownHosts, repoDir(name), repoLog(name), repoConf(name), envFile(name, phase) }`. Every per-repo helper validates `name` against `NAME_RE`, so a traversal-shaped name from any command or socket message throws before a path is built.
@@ -74,28 +74,28 @@ import { paths } from '../lib/paths.mjs';
 
 test('paths derive from one prefix', () => {
   const p = paths('/tmp/x');
-  assert.equal(p.etc, '/tmp/x/etc/deployd');
-  assert.equal(p.mainConf, '/tmp/x/etc/deployd/deployd.conf');
-  assert.equal(p.reposDir, '/tmp/x/etc/deployd/repos');
-  assert.equal(p.envDir, '/tmp/x/etc/deployd/env');
-  assert.equal(p.lib, '/tmp/x/var/lib/deployd');
-  assert.equal(p.log, '/tmp/x/var/log/deployd');
-  assert.equal(p.sock, '/tmp/x/run/deployd/deployd.sock');
-  assert.equal(p.knownHosts, '/tmp/x/var/lib/deployd/.ssh/known_hosts');
-  assert.equal(p.repoDir('a'), '/tmp/x/var/lib/deployd/a');
-  assert.equal(p.repoLog('a'), '/tmp/x/var/log/deployd/a');
-  assert.equal(p.envFile('a', 'build'), '/tmp/x/etc/deployd/env/a.build');
-  assert.equal(p.repoConf('a'), '/tmp/x/etc/deployd/repos/a.conf');
+  assert.equal(p.etc, '/tmp/x/etc/remote-deploy');
+  assert.equal(p.mainConf, '/tmp/x/etc/remote-deploy/remote-deploy.conf');
+  assert.equal(p.reposDir, '/tmp/x/etc/remote-deploy/repos');
+  assert.equal(p.envDir, '/tmp/x/etc/remote-deploy/env');
+  assert.equal(p.lib, '/tmp/x/var/lib/remote-deploy');
+  assert.equal(p.log, '/tmp/x/var/log/remote-deploy');
+  assert.equal(p.sock, '/tmp/x/run/remote-deploy/remote-deploy.sock');
+  assert.equal(p.knownHosts, '/tmp/x/var/lib/remote-deploy/.ssh/known_hosts');
+  assert.equal(p.repoDir('a'), '/tmp/x/var/lib/remote-deploy/a');
+  assert.equal(p.repoLog('a'), '/tmp/x/var/log/remote-deploy/a');
+  assert.equal(p.envFile('a', 'build'), '/tmp/x/etc/remote-deploy/env/a.build');
+  assert.equal(p.repoConf('a'), '/tmp/x/etc/remote-deploy/repos/a.conf');
 });
 
 test('default prefix is /', () => {
-  delete process.env.DEPLOYD_PREFIX;
-  assert.equal(paths().etc, '/etc/deployd');
+  delete process.env.REMOTE_DEPLOY_PREFIX;
+  assert.equal(paths().etc, '/etc/remote-deploy');
 });
 
 test('per-repo paths refuse a name that is not a plain repo name', () => {
   const p = paths('/tmp/x');
-  for (const bad of ['../deployd', 'a/b', '', 'Upper', '.hidden', 'x'.repeat(65)]) {
+  for (const bad of ['../remote-deploy', 'a/b', '', 'Upper', '.hidden', 'x'.repeat(65)]) {
     assert.throws(() => p.repoDir(bad), /repo name/);
     assert.throws(() => p.repoLog(bad), /repo name/);
     assert.throws(() => p.envFile(bad, 'build'), /repo name/);
@@ -113,12 +113,12 @@ Expected: FAIL, cannot find module `../lib/paths.mjs`
 
 ```json
 {
-  "name": "deployd",
+  "name": "remote-deploy",
   "version": "0.1.0",
   "description": "Build-on-push for a box you own",
   "type": "module",
   "private": true,
-  "bin": { "deployd": "bin/deployd" },
+  "bin": { "remote-deploy": "bin/remote-deploy" },
   "engines": { "node": ">=20" },
   "scripts": { "test": "node --test test/" }
 }
@@ -136,7 +136,7 @@ import path from 'node:path';
 export const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 // Every per-repo path goes through this, so no command can build a path from an
-// unchecked name: `sudo deployd remove ../deployd` must die here, not in rm.
+// unchecked name: `sudo remote-deploy remove ../remote-deploy` must die here, not in rm.
 export function checkName(name) {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     throw Object.assign(new Error(`bad repo name "${name}": must match ${NAME_RE}`), { code: 'EBADNAME' });
@@ -144,24 +144,24 @@ export function checkName(name) {
   return name;
 }
 
-export function paths(prefix = process.env.DEPLOYD_PREFIX ?? '/') {
+export function paths(prefix = process.env.REMOTE_DEPLOY_PREFIX ?? '/') {
   const p = (...parts) => path.join(prefix, ...parts);
   return {
     prefix,
-    etc: p('etc/deployd'),
-    mainConf: p('etc/deployd/deployd.conf'),
-    reposDir: p('etc/deployd/repos'),
-    envDir: p('etc/deployd/env'),
-    lib: p('var/lib/deployd'),
-    log: p('var/log/deployd'),
-    sock: p('run/deployd/deployd.sock'),   // systemd's RuntimeDirectory=deployd owns /run/deployd
-    knownHosts: p('var/lib/deployd/.ssh/known_hosts'),
-    repoDir: (name) => p('var/lib/deployd', checkName(name)),
-    repoLog: (name) => p('var/log/deployd', checkName(name)),
-    repoConf: (name) => p('etc/deployd/repos', `${checkName(name)}.conf`),
+    etc: p('etc/remote-deploy'),
+    mainConf: p('etc/remote-deploy/remote-deploy.conf'),
+    reposDir: p('etc/remote-deploy/repos'),
+    envDir: p('etc/remote-deploy/env'),
+    lib: p('var/lib/remote-deploy'),
+    log: p('var/log/remote-deploy'),
+    sock: p('run/remote-deploy/remote-deploy.sock'),   // systemd's RuntimeDirectory=remote-deploy owns /run/remote-deploy
+    knownHosts: p('var/lib/remote-deploy/.ssh/known_hosts'),
+    repoDir: (name) => p('var/lib/remote-deploy', checkName(name)),
+    repoLog: (name) => p('var/log/remote-deploy', checkName(name)),
+    repoConf: (name) => p('etc/remote-deploy/repos', `${checkName(name)}.conf`),
     envFile: (name, phase) => {
       if (phase !== 'build' && phase !== 'deploy') throw new Error(`phase must be build or deploy, got "${phase}"`);
-      return p('etc/deployd/env', `${checkName(name)}.${phase}`);
+      return p('etc/remote-deploy/env', `${checkName(name)}.${phase}`);
     },
   };
 }
@@ -169,11 +169,11 @@ export function paths(prefix = process.env.DEPLOYD_PREFIX ?? '/') {
 
 ```js
 #!/usr/bin/env node
-// bin/deployd
+// bin/remote-deploy
 import { paths } from '../lib/paths.mjs';
 
 const COMMANDS = ['serve', 'add', 'check', 'run', 'rollback', 'status', 'log', 'env', 'remove'];
-const USAGE = `usage: deployd <command> [args]
+const USAGE = `usage: remote-deploy <command> [args]
 
   serve                              run the service (systemd does this)
   add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]
@@ -203,7 +203,7 @@ try {
 process.exit(code ?? 0);
 ```
 
-Run `chmod +x bin/deployd`.
+Run `chmod +x bin/remote-deploy`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -213,8 +213,8 @@ Expected: 2 passing
 - [ ] **Step 5: Commit**
 
 ```bash
-git add package.json .gitignore bin/deployd lib/paths.mjs test/paths.test.mjs
-git commit -m "Scaffold deployd: entry point and prefix-derived paths
+git add package.json .gitignore bin/remote-deploy lib/paths.mjs test/paths.test.mjs
+git commit -m "Scaffold remote-deploy: entry point and prefix-derived paths
 
 Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
 ```
@@ -276,8 +276,8 @@ test('parseRepo: defaults, required keys, name and ROOT rules', () => {
   assert.equal(r.root, '.');
   assert.deepEqual(r.watch, ['mta/**', 'packages/**']);
   assert.deepEqual(r.ignore, []);
-  assert.equal(r.buildEnvFile, '/x/etc/deployd/env/alias.build');
-  assert.equal(r.key, '/x/var/lib/deployd/alias/key');
+  assert.equal(r.buildEnvFile, '/x/etc/remote-deploy/env/alias.build');
+  assert.equal(r.key, '/x/var/lib/remote-deploy/alias/key');
   assert.equal(r.timeout, 1200);
   assert.equal(r.onFailure, null);
   assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nON_FAILURE=curl x', p).onFailure, 'curl x');
@@ -288,7 +288,7 @@ test('parseRepo: defaults, required keys, name and ROOT rules', () => {
 });
 
 test('loadRepos: bad file is reported, good ones load', async () => {
-  const prefix = await fs.mkdtemp(path.join(os.tmpdir(), 'deployd-'));
+  const prefix = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-'));
   const p = paths(prefix);
   await fs.mkdir(p.reposDir, { recursive: true });
   await fs.writeFile(path.join(p.reposDir, 'good.conf'), 'REPO=a\nBUILD=b\nDEPLOY=c\n');
@@ -574,12 +574,12 @@ import path from 'node:path';
 import { emptyState, readState, writeState } from '../lib/state.mjs';
 
 test('missing state reads as empty', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'deployd-state-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
   assert.deepEqual(await readState(dir), emptyState());
 });
 
 test('round trip, and a stale tmp file is ignored', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'deployd-state-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
   const s = { ...emptyState(), live: 'r1', releases: { r1: { sha: 'a'.repeat(40), root: '.', deploy: 'x', built: 't' } } };
   await writeState(dir, s);
   await fs.writeFile(path.join(dir, 'state.json.tmp'), '{ broken');
@@ -589,7 +589,7 @@ test('round trip, and a stale tmp file is ignored', async () => {
 });
 
 test('a partial file on disk gains missing fields', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'deployd-state-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
   await fs.writeFile(path.join(dir, 'state.json'), '{"live":"r1"}');
   const s = await readState(dir);
   assert.equal(s.live, 'r1');
@@ -674,7 +674,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { attemptIdFor, openAttemptLog, appendEvent, pruneLogs, latestLog, makeScrubber } from '../lib/log.mjs';
 
-const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'deployd-log-'));
+const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-log-'));
 const fixed = () => new Date('2026-09-05T08:14:02.345Z');
 
 test('attempt id is the UTC second with dashes', () => {
@@ -853,7 +853,7 @@ function makeLog(id, file, fh, maxBytes, mask) {
     id,
     file,
     line(text) {
-      // deployd's own lines are never dropped, but no single line may carry an
+      // remote-deploy's own lines are never dropped, but no single line may carry an
       // unbounded payload (git stderr inside an error message, say).
       const flushed = held ? scrubStream('', true) : '';
       const t = Buffer.byteLength(text) > LINE_MAX ? `${Buffer.from(text).subarray(0, LINE_MAX).toString()} [line cut at ${LINE_MAX} bytes]` : text;
@@ -1097,12 +1097,12 @@ const GIT_ENV = {
   GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
 };
 
-export async function tmpdir(label = 'deployd') {
+export async function tmpdir(label = 'remote-deploy') {
   return fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));
 }
 
 export async function makePrefix() {
-  const prefix = await tmpdir('deployd-prefix');
+  const prefix = await tmpdir('remote-deploy-prefix');
   const p = paths(prefix);
   for (const d of [p.reposDir, p.envDir, p.lib, p.log, path.dirname(p.sock), path.dirname(p.knownHosts)]) {
     await fs.mkdir(d, { recursive: true });
@@ -1112,7 +1112,7 @@ export async function makePrefix() {
 }
 
 export async function makeSourceRepo() {
-  const dir = await tmpdir('deployd-src');
+  const dir = await tmpdir('remote-deploy-src');
   const g = (...args) => run('git', ['-C', dir, ...args], { env: GIT_ENV });
   await run('git', ['init', '-q', '-b', 'main', dir], { env: GIT_ENV });
   async function commit(files, message = 'c') {
@@ -1153,7 +1153,7 @@ const opts = () => ({ env: gitEnv({ key: '/nonexistent/key', knownHosts: '/nonex
 test('clone, fetch, diff, worktree, ls-remote against a file:// repo', async () => {
   const src = await makeSourceRepo();
   const a = await src.commit({ 'README.md': 'a', 'mta/x.mjs': '1' });
-  const work = await tmpdir('deployd-git');
+  const work = await tmpdir('remote-deploy-git');
   const bare = path.join(work, 'git');
 
   assert.equal(await isBareRepo(bare), false);
@@ -1183,7 +1183,7 @@ test('clone, fetch, diff, worktree, ls-remote against a file:// repo', async () 
 test('fetch of a missing branch is a GitError with stderr', async () => {
   const src = await makeSourceRepo();
   await src.commit({ a: '1' });
-  const bare = path.join(await tmpdir('deployd-git'), 'git');
+  const bare = path.join(await tmpdir('remote-deploy-git'), 'git');
   await cloneBare(src.url, bare, opts());
   await assert.rejects(fetchBranch(bare, 'nope', opts()), (e) => e instanceof GitError && e.stderr.length > 0);
   assert.equal(await lsRemote(src.url, 'nope', opts()), null);
@@ -1206,7 +1206,7 @@ test('a timeout kills a git command and reports it', async () => {
 });
 
 test('a clone that fails leaves no bare directory behind', async () => {
-  const bare = path.join(await tmpdir('deployd-git'), 'git');
+  const bare = path.join(await tmpdir('remote-deploy-git'), 'git');
   await assert.rejects(cloneBare('file:///nonexistent/repo', bare, opts()));
   assert.equal(await isBareRepo(bare), false);
   await assert.rejects(fs.stat(bare));
@@ -1607,7 +1607,7 @@ Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
   - `runEntry(ctx, entry) → Promise<outcome | 'refused'>` where `ctx = { paths, main, repo: RepoConfig, now: () => Date, protectedTargets: (name) => { targets: string[], reserved: boolean }, signal?: AbortSignal, journal: (line) => void, graceMs? }` and `entry = { kind, name, target?, forced?, githubId? }`. A webhook entry's `githubId` is recorded in state at open if state has none; the worker is the only writer of `state.json`. `manual` entries are forced. Returns the outcome string written to state, or `'refused'` when a webhook run was refused because `pending` is set (no attempt log is created in that case).
   - `runOnFailure(ctx, repo, { attemptId, outcome, sha, releaseId, logFile, envFile? }) → Promise<void>`: runs `ON_FAILURE` if set, 60 s cap (8 s during shutdown, without the abort signal), output capped and masked before its first line goes to `events.log`; never throws
   - `resolveRollbackTarget(state) → releaseId | null` (`pending ? live : previous`, and the release must exist in `state.releases`)
-  - `commandEnv(ctx, repo, phase, { releaseId, sha, previousSha, attemptId }, extra: Map) → { env, keys, refused, file }`; synchronous, `extra` is the env file already read at open; deployd's own variables win, any `DEPLOY_*` key from the file is refused, and `refused` lists them
+  - `commandEnv(ctx, repo, phase, { releaseId, sha, previousSha, attemptId }, extra: Map) → { env, keys, refused, file }`; synchronous, `extra` is the env file already read at open; remote-deploy's own variables win, any `DEPLOY_*` key from the file is refused, and `refused` lists them
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1712,7 +1712,7 @@ test('deploy failure: current flipped, live unchanged, pending set, webhook refu
   assert.equal(s.previous, null);
   assert.ok(s.pending && s.pending !== good);
   assert.equal(await t.current(), s.pending);
-  assert.match(await fs.readFile(s.last.log, 'utf8'), /deployd rollback r/);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /remote-deploy rollback r/);
 
   assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'refused');
   assert.match(await t.events(), /refused/);
@@ -1856,7 +1856,7 @@ test('a malformed deploy env file after the flip is a deploy failure with the ro
   assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'deploy failed');
   const s = await t.state();
   assert.ok(s.pending);
-  assert.match(await fs.readFile(s.last.log, 'utf8'), /next: deployd rollback r/);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /next: remote-deploy rollback r/);
 });
 
 test('state.last is on disk from the moment an attempt opens', async () => {
@@ -2002,7 +2002,7 @@ export function commandEnv(ctx, repo, phase, { releaseId, sha, previousSha, atte
     DEPLOY_ATTEMPT_ID: attemptId,
     DEPLOY_NAME: repo.name,
   };
-  // deployd's own variables win. An env file that tries to replace PATH or HOME,
+  // remote-deploy's own variables win. An env file that tries to replace PATH or HOME,
   // or to set any DEPLOY_* name, gets a warning line, not a different environment.
   const refused = [];
   for (const [k, v] of extra) {
@@ -2023,7 +2023,7 @@ export async function runEntry(ctx, entry) {
 
   let state = await readState(dir);
   if (entry.kind === 'webhook' && state.pending) {
-    await appendEvent(logDir, 'refused', `pending ${state.pending}; run deployd rollback ${name} or deployd run ${name}`);
+    await appendEvent(logDir, 'refused', `pending ${state.pending}; run remote-deploy rollback ${name} or remote-deploy run ${name}`);
     return 'refused';
   }
 
@@ -2053,7 +2053,7 @@ export async function runEntry(ctx, entry) {
   const step = async (label) => { stepTimes[label] = Date.now(); await log.line(`step ${label}`); };
   const done = async (label, extra = '') => { await log.line(`step ${label} done ${Date.now() - stepTimes[label]}ms${extra ? ' ' + extra : ''}`); };
   await appendEvent(logDir, 'started', `${log.id} ${entry.kind} ${log.file}`);
-  await log.line(`deployd attempt ${log.id}  name=${name}  trigger=${entry.kind}${entry.target ? `  target release=${entry.target}` : ''}`);
+  await log.line(`remote-deploy attempt ${log.id}  name=${name}  trigger=${entry.kind}${entry.target ? `  target release=${entry.target}` : ''}`);
   await log.line(`repo=${repo.repo}  branch=${repo.branch}  root=${repo.root}`);
   await fs.rm(path.join(dir, 'current.tmp'), { force: true });
 
@@ -2066,7 +2066,7 @@ export async function runEntry(ctx, entry) {
     if (envFiles.error) throw new Stop(which === 'build' ? 'build failed' : 'deploy failed', `env file: ${envFiles.error.message}`);
     const { env, keys, refused, file } = commandEnv(ctx, repo, which, ids, envFiles[which]);
     await log.line(`${which} env from ${file}: ${keys.join(' ') || '(none)'}`);
-    if (refused.length) await log.line(`${which} env: refused ${refused.join(' ')} (deployd's own variables win)`);
+    if (refused.length) await log.line(`${which} env: refused ${refused.join(' ')} (remote-deploy's own variables win)`);
     await log.line(`${which}: ${command}`);
     const r = await runCommand({ command, cwd, env, timeoutSec: repo.timeout, onOutput: (c) => log.output(c), signal: ctx.signal, graceMs: ctx.graceMs });
     exitCodes[which] = r.timedOut ? `timeout after ${repo.timeout}s` : r.code ?? `signal ${r.signal}`;
@@ -2131,7 +2131,7 @@ export async function runEntry(ctx, entry) {
         } else {
           const origin = await remoteUrl(gitDir, gitOpts);
           if (origin !== repo.repo) {
-            throw new Stop('fetch failed', `REPO changed: clone has ${origin}, config says ${repo.repo}; run deployd check ${name} --set-remote`);
+            throw new Stop('fetch failed', `REPO changed: clone has ${origin}, config says ${repo.repo}; run remote-deploy check ${name} --set-remote`);
           }
         }
         sha = await fetchBranch(gitDir, repo.branch, gitRun);
@@ -2220,9 +2220,9 @@ export async function runEntry(ctx, entry) {
   await log.line(`outcome: ${outcome}${detail ? `  ${detail}` : ''}`);
   await log.line(`exit codes: ${Object.entries(exitCodes).map(([k, v]) => `${k}=${v}`).join(' ') || '(no commands ran)'}  duration ${secs}s`);
   if (state.pending) {
-    await log.line(`next: deployd rollback ${name}   (current is flipped to ${state.pending} but it is not confirmed)`);
+    await log.line(`next: remote-deploy rollback ${name}   (current is flipped to ${state.pending} but it is not confirmed)`);
   } else if (outcome !== 'ok' && outcome !== 'skipped') {
-    await log.line(`next: fix, push, or deployd run ${name}`);
+    await log.line(`next: fix, push, or remote-deploy run ${name}`);
   }
   await log.close();
   const event = outcome === 'skipped' ? 'skipped' : outcome === 'fetch failed' ? 'fetch-failed' : outcome === 'interrupted' ? 'interrupted' : 'finished';
@@ -2563,7 +2563,7 @@ import { tmpdir } from './helpers.mjs';
 import { createSocketServer, sendCommand } from '../lib/socket.mjs';
 
 test('round trip, handler errors, stale file, service down', async () => {
-  const sock = path.join(await tmpdir('deployd-sock'), 'd.sock');
+  const sock = path.join(await tmpdir('remote-deploy-sock'), 'd.sock');
   await fs.writeFile(sock, 'stale');
   const server = await createSocketServer(sock, async (msg) => {
     if (msg.cmd === 'boom') throw new Error('bad');
@@ -2647,7 +2647,7 @@ Expected: 1 passing
 
 ```bash
 git add lib/socket.mjs test/socket.test.mjs
-git commit -m "Socket: one JSON line in, one out, over /run/deployd/deployd.sock
+git commit -m "Socket: one JSON line in, one out, over /run/remote-deploy/remote-deploy.sock
 
 Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
 ```
@@ -2662,12 +2662,12 @@ Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
 **Interfaces:**
 - Consumes: Tasks 2, 4, 5, 8, 9, 10, 11
 - Produces:
-  - `runCheck(ctx, { setRemote }) → Promise<{ rows: [label, text][], passed: boolean, behind: boolean }>` where `ctx = { paths, repo, journal, signal }` (`behind` when the branch head differs from the live sha, or `pending` is set; every git call takes the shutdown signal and a two-minute timeout) where `ctx = { paths, repo, journal }`. What `deployd check` does, run on the worker so it reads the deploy key as `deployd` and never races a fetch.
+  - `runCheck(ctx, { setRemote }) → Promise<{ rows: [label, text][], passed: boolean, behind: boolean }>` where `ctx = { paths, repo, journal, signal }` (`behind` when the branch head differs from the live sha, or `pending` is set; every git call takes the shutdown signal and a two-minute timeout) where `ctx = { paths, repo, journal }`. What `remote-deploy check` does, run on the worker so it reads the deploy key as `remote-deploy` and never races a fetch.
   - `reconcile(p, journal) → Promise<void>`, run once at startup, per repo: remove `current.tmp`; if `last.finished` is null the attempt was interrupted (log `interrupted`, set `last.outcome`, and if `pending` is set say so with the rollback line); if `pending` is set and `last` is final, that is an unresolved failed deploy, one journald line and no new event; remove any `releases/<id>` directory absent from `state.releases` (a crash between worktree add and registration).
   - `findRepoFor(p, journal) → ({ sshUrl, branch, id }) => Promise<RepoConfig | null>`: loads configs fresh; matches `REPO` and `BRANCH`; failing that, matches a repo whose state has `github_id === id` and the same branch, journaling and logging `renamed` once per push.
   - The socket's rollback handler reserves with `queue.reserveRollback` *before* reading state, and commits or cancels after resolving the target, so prune cannot remove the release between the two.
   - `serve({ paths, journal }) → Promise<{ hookPort, close() }>`. Socket commands: `{cmd:'run', name}` → `{ok, queued}`; `{cmd:'rollback', name}` → `{ok, queued, target}`; `{cmd:'check', name, setRemote}` → `{ok, rows, passed}` or `{ok:false, error:'busy: …'}`; `{cmd:'status'}` → `{ok, running, queued: string[]}`.
-  - CLI: `deployd run <name>`, `deployd rollback <name>` print the reply and exit 0 on `ok`, 1 otherwise; exit 3 with `service down` when the socket is unreachable.
+  - CLI: `remote-deploy run <name>`, `remote-deploy rollback <name>` print the reply and exit 0 on `ok`, 1 otherwise; exit 3 with `service down` when the socket is unreachable.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2881,7 +2881,7 @@ export async function runCheck({ paths: p, repo, signal }, { setRemote = false }
   const row = (k, v) => rows.push([k, v]);
   row('config', `ok  ${p.repoConf(repo.name)}`);
   try { await fs.stat(repo.key); row('key', `ok  ${repo.key}`); }
-  catch { row('key', `MISSING  ${repo.key}  (run: sudo deployd add ${repo.repo} --name ${repo.name})`); passed = false; }
+  catch { row('key', `MISSING  ${repo.key}  (run: sudo remote-deploy add ${repo.repo} --name ${repo.name})`); passed = false; }
 
   const gitDir = path.join(p.repoDir(repo.name), 'git');
   // Every git call here is bounded: a hung ls-remote must not wedge shutdown.
@@ -2898,7 +2898,7 @@ export async function runCheck({ paths: p, repo, signal }, { setRemote = false }
     const origin = await remoteUrl(gitDir, opts);
     if (origin === repo.repo) row('remote', `ok  ${origin}`);
     else if (setRemote) { await setRemoteUrl(gitDir, repo.repo, opts); row('remote', `repointed  ${origin}  ->  ${repo.repo}`); }
-    else { row('remote', `MISMATCH  clone has ${origin}, config says ${repo.repo}  (run: deployd check ${repo.name} --set-remote)`); passed = false; }
+    else { row('remote', `MISMATCH  clone has ${origin}, config says ${repo.repo}  (run: remote-deploy check ${repo.name} --set-remote)`); passed = false; }
     const head = await lsRemote(repo.repo, repo.branch, opts);
     const state = await readState(p.repoDir(repo.name));
     const liveSha = state.live ? state.releases[state.live]?.sha : null;
@@ -2907,7 +2907,7 @@ export async function runCheck({ paths: p, repo, signal }, { setRemote = false }
       behind = liveSha !== head;
       row(repo.branch, `${shortSha(head)}  (live: ${liveSha ? shortSha(liveSha) : 'none'})${behind ? '  behind' : '  up to date'}`);
     }
-    if (state.pending) { behind = true; row('pending', `${state.pending} is flipped but unconfirmed  (run: deployd rollback ${repo.name} or deployd run ${repo.name})`); }
+    if (state.pending) { behind = true; row('pending', `${state.pending} is flipped but unconfirmed  (run: remote-deploy rollback ${repo.name} or remote-deploy run ${repo.name})`); }
   } catch (e) {
     row('git', `FAIL  ${e.message}${e.stderr ? `\n${e.stderr.trim().slice(0, 2000)}` : ''}`);
     passed = false;
@@ -2955,7 +2955,7 @@ export async function reconcile(p, journal) {
       state.last.outcome = 'interrupted';
       state.last.finished = new Date().toISOString();
       await writeState(dir, state);
-      const hint = state.pending ? `; current is flipped to ${state.pending} and unconfirmed: run deployd rollback ${name} or deployd run ${name}` : '';
+      const hint = state.pending ? `; current is flipped to ${state.pending} and unconfirmed: run remote-deploy rollback ${name} or remote-deploy run ${name}` : '';
       journal(`[${name}] attempt ${state.last.attempt} was interrupted by a service stop${hint}`);
       await appendEvent(p.repoLog(name), 'interrupted', `${state.last.attempt}${state.pending ? ` pending ${state.pending}` : ''} found at startup`);
       try {
@@ -2966,7 +2966,7 @@ export async function reconcile(p, journal) {
       }
     } else if (state.pending) {
       // Already recorded as a failed deploy (or an earlier interruption). Say so, once, in journald only.
-      journal(`[${name}] pending ${state.pending} is still unconfirmed; run deployd rollback ${name} or deployd run ${name}`);
+      journal(`[${name}] pending ${state.pending} is still unconfirmed; run remote-deploy rollback ${name} or remote-deploy run ${name}`);
     }
   }
 }
@@ -3024,7 +3024,7 @@ export async function serve({ paths: p, journal = (l) => process.stderr.write(`$
       await appendEvent(p.repoLog(repo.name), 'webhook', `${info.sha} ${info.pusher}`.trim());
       const state = await readState(p.repoDir(repo.name));   // read only: the worker writes state
       if (state.pending) {
-        await appendEvent(p.repoLog(repo.name), 'refused', `pending ${state.pending}; run deployd rollback ${repo.name} or deployd run ${repo.name}`);
+        await appendEvent(p.repoLog(repo.name), 'refused', `pending ${state.pending}; run remote-deploy rollback ${repo.name} or remote-deploy run ${repo.name}`);
         return { status: 200, body: `refused ${repo.name}: pending ${state.pending}` };
       }
       const r = queue.enqueue({ kind: 'webhook', name: repo.name, githubId: info.id });
@@ -3110,12 +3110,12 @@ import { sendCommand } from '../socket.mjs';
 
 export async function viaSocket(cmd, args, { paths, stdout, stderr }) {
   const name = args[0];
-  if (!name) { stderr.write(`usage: deployd ${cmd} <name>\n`); return 2; }
+  if (!name) { stderr.write(`usage: remote-deploy ${cmd} <name>\n`); return 2; }
   let reply;
   try {
     reply = await sendCommand(paths.sock, { cmd, name });
   } catch (e) {
-    stderr.write(`service down (${e.code ?? e.message}); is deployd.service running?\n`);
+    stderr.write(`service down (${e.code ?? e.message}); is remote-deploy.service running?\n`);
     return 3;
   }
   if (!reply.ok) { stderr.write(`${reply.error}\n`); return 1; }
@@ -3150,10 +3150,10 @@ Expected: 7 passing
 - [ ] **Step 5: Smoke the entry point by hand**
 
 ```bash
-DEPLOYD_PREFIX=$(mktemp -d) ; mkdir -p $DEPLOYD_PREFIX/etc/deployd $DEPLOYD_PREFIX/run $DEPLOYD_PREFIX/var/lib/deployd/.ssh
-echo 'WEBHOOK_SECRET=x' > $DEPLOYD_PREFIX/etc/deployd/deployd.conf
-DEPLOYD_PREFIX=$DEPLOYD_PREFIX ./bin/deployd serve &
-sleep 1; DEPLOYD_PREFIX=$DEPLOYD_PREFIX ./bin/deployd run nothing; echo "exit $?"; kill %1
+REMOTE_DEPLOY_PREFIX=$(mktemp -d) ; mkdir -p $REMOTE_DEPLOY_PREFIX/etc/remote-deploy $REMOTE_DEPLOY_PREFIX/run $REMOTE_DEPLOY_PREFIX/var/lib/remote-deploy/.ssh
+echo 'WEBHOOK_SECRET=x' > $REMOTE_DEPLOY_PREFIX/etc/remote-deploy/remote-deploy.conf
+REMOTE_DEPLOY_PREFIX=$REMOTE_DEPLOY_PREFIX ./bin/remote-deploy serve &
+sleep 1; REMOTE_DEPLOY_PREFIX=$REMOTE_DEPLOY_PREFIX ./bin/remote-deploy run nothing; echo "exit $?"; kill %1
 ```
 Expected: `serve` prints `listening on 127.0.0.1:9000 /deploy`; `run nothing` prints an ENOENT message for the missing config and exits 1.
 
@@ -3175,7 +3175,7 @@ Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
 
 **Interfaces:**
 - Consumes: `loadRepos`, `loadMain`, `readState`, `latestLog`, `sendCommand`
-- Produces: `deployd status [name]` prints one row per repo, plus `PENDING` and stale-hook lines; `deployd log <name> [--follow]` prints or tails the latest attempt log. Both exit 0 when they printed something, 1 when the repo is unknown.
+- Produces: `remote-deploy status [name]` prints one row per repo, plus `PENDING` and stale-hook lines; `remote-deploy log <name> [--follow]` prints or tails the latest attempt log. Both exit 0 when they printed something, 1 when the repo is unknown.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3265,7 +3265,7 @@ export default async function (args, { paths: p, stdout, stderr }) {
     let activity = 'service down';
     if (live?.ok) activity = live.running === repo.name ? 'running' : live.queued.includes(repo.name) ? 'queued' : 'idle';
     rows.push([repo.name, repo.branch, liveSha, outcome, activity]);
-    if (s.pending) rows.push(['', '', '', `PENDING ${s.pending}`, `run: deployd rollback ${repo.name}  or  deployd run ${repo.name}`]);
+    if (s.pending) rows.push(['', '', '', `PENDING ${s.pending}`, `run: remote-deploy rollback ${repo.name}  or  remote-deploy run ${repo.name}`]);
     if (main?.publicHost && repo.hookHost && repo.hookHost !== main.publicHost) {
       rows.push(['', '', '', `webhook still points at ${repo.hookHost}; this box is now ${main.publicHost}`, '']);
     }
@@ -3292,7 +3292,7 @@ import { latestLog } from '../log.mjs';
 export default async function (args, { paths: p, stdout, stderr }) {
   const name = args.find((a) => !a.startsWith('--'));
   const follow = args.includes('--follow') || args.includes('-f');
-  if (!name) { stderr.write('usage: deployd log <name> [--follow]\n'); return 2; }
+  if (!name) { stderr.write('usage: remote-deploy log <name> [--follow]\n'); return 2; }
   let file;
   try { file = await latestLog(p.repoLog(name)); } catch (e) { stderr.write(`${e.message}\n`); return 1; }
   if (!file) { stderr.write(`no attempt logs for ${name}\n`); return 1; }
@@ -3328,12 +3328,12 @@ Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
 
 **Interfaces:**
 - Produces:
-  - `chownDeployd(file, { mode }) → Promise<void>`: when running as root, `chown` to `deployd:deployd` (or `root:deployd` when `{ root: true }`) and `chmod`; otherwise only `chmod`. Never throws when the `deployd` user does not exist; prints one warning.
+  - `chownRemoteDeploy(file, { mode }) → Promise<void>`: when running as root, `chown` to `remote-deploy:remote-deploy` (or `root:remote-deploy` when `{ root: true }`) and `chmod`; otherwise only `chmod`. Never throws when the `remote-deploy` user does not exist; prints one warning.
   - `parseRepoUrl(url) → { owner, repo, name }` for `git@github.com:owner/repo.git` and `https://github.com/owner/repo(.git)`; returns `name = repo`.
-  - `deployd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` exit 0; 2 on usage; 1 if the config exists, the name is bad, or `--key` names a missing file. With `--key`, no key is generated, `KEY=` is written, and the printed step 1 is the machine-user collaborator instruction.
-  - `deployd check <name> [--set-remote]` sends `{cmd:'check'}` over the socket with a 10-minute timeout, prints the rows, exit 0 when `passed` and up to date, **4 when `passed` but `behind`** (a lost webhook or an unconfirmed deploy: the cron-alert exit), 1 on a failed row, 3 when the service is down, and 1 with the `busy:` line when the worker is not idle.
-  - `deployd env <name> build|deploy [--set K=V]... [--unset K]...` exit 0; opens `$EDITOR` when neither flag is given.
-  - `deployd remove <name>` exit 0; 1 if queued or running or unknown.
+  - `remote-deploy add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` exit 0; 2 on usage; 1 if the config exists, the name is bad, or `--key` names a missing file. With `--key`, no key is generated, `KEY=` is written, and the printed step 1 is the machine-user collaborator instruction.
+  - `remote-deploy check <name> [--set-remote]` sends `{cmd:'check'}` over the socket with a 10-minute timeout, prints the rows, exit 0 when `passed` and up to date, **4 when `passed` but `behind`** (a lost webhook or an unconfirmed deploy: the cron-alert exit), 1 on a failed row, 3 when the service is down, and 1 with the `busy:` line when the worker is not idle.
+  - `remote-deploy env <name> build|deploy [--set K=V]... [--unset K]...` exit 0; opens `$EDITOR` when neither flag is given.
+  - `remote-deploy remove <name>` exit 0; 1 if queued or running or unknown.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3380,7 +3380,7 @@ test('add writes the config with placeholders, generates a key, prints the next 
   assert.ok(o.out().includes(pub.trim()));
   assert.match(o.out(), /gh repo deploy-key add .*-R o\/r/);
   assert.match(o.out(), /https:\/\/deploy\.example\.com\/deploy/);
-  assert.match(o.out(), /deployd check r/);
+  assert.match(o.out(), /remote-deploy check r/);
   assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
   assert.equal(await add(['git@github.com:o/r.git'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x', '--name', 'Bad Name'], { paths: p, ...io() }), 1);
@@ -3392,7 +3392,7 @@ test('add --key writes KEY, generates nothing, and prints the collaborator instr
   await writeMain(p);
   const shared = path.join(p.etc, 'machine.key');
   await fs.writeFile(shared, 'k');
-  await fs.writeFile(`${shared}.pub`, 'ssh-ed25519 AAAAmachine deployd-machine');
+  await fs.writeFile(`${shared}.pub`, 'ssh-ed25519 AAAAmachine remote-deploy-machine');
   const o = io();
   assert.equal(await add(['git@github.com:o/s.git', '--key', shared], { paths: p, ...o }), 0);
   const text = await fs.readFile(p.repoConf('s'), 'utf8');
@@ -3458,7 +3458,7 @@ test('remove: refuses while queued or running, otherwise deletes the config and 
   assert.match(ok.out(), new RegExp(`rm -rf ${p.repoLog('r')}`));
   assert.equal(await remove(['zzz'], { paths: p, ...io(), statusOverride: async () => ({ ok: true, running: null, queued: [] }) }), 1);
   await fs.writeFile(p.mainConf, 'WEBHOOK_SECRET=s\n');
-  await assert.rejects(remove(['../deployd'], { paths: p, ...io(), statusOverride: async () => ({ ok: true, running: null, queued: [] }) }), /repo name/);
+  await assert.rejects(remove(['../remote-deploy'], { paths: p, ...io(), statusOverride: async () => ({ ok: true, running: null, queued: [] }) }), /repo name/);
   await fs.stat(p.mainConf);
 });
 ```
@@ -3479,11 +3479,11 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 let ids = null;
 
-async function deploydIds() {
+async function remoteDeployIds() {
   if (ids) return ids;
   try {
-    const uid = Number((await run('id', ['-u', 'deployd'])).stdout.trim());
-    const gid = Number((await run('id', ['-g', 'deployd'])).stdout.trim());
+    const uid = Number((await run('id', ['-u', 'remote-deploy'])).stdout.trim());
+    const gid = Number((await run('id', ['-g', 'remote-deploy'])).stdout.trim());
     ids = { uid, gid };
   } catch {
     ids = null;
@@ -3491,12 +3491,12 @@ async function deploydIds() {
   return ids;
 }
 
-// chown only when root; chmod always. root:true means owner root, group deployd.
-export async function chownDeployd(file, { mode, root = false } = {}) {
+// chown only when root; chmod always. root:true means owner root, group remote-deploy.
+export async function chownRemoteDeploy(file, { mode, root = false } = {}) {
   if (typeof mode === 'number') await fs.chmod(file, mode);
   if (process.getuid?.() !== 0) return;
-  const d = await deploydIds();
-  if (!d) { process.stderr.write(`warning: no deployd user; leaving ${file} owned by root\n`); return; }
+  const d = await remoteDeployIds();
+  if (!d) { process.stderr.write(`warning: no remote-deploy user; leaving ${file} owned by root\n`); return; }
   await fs.chown(file, root ? 0 : d.uid, d.gid);
 }
 ```
@@ -3510,7 +3510,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseArgs } from 'node:util';
 import { NAME_RE, loadMain } from '../config.mjs';
-import { chownDeployd } from '../owner.mjs';
+import { chownRemoteDeploy } from '../owner.mjs';
 
 const run = promisify(execFile);
 
@@ -3528,7 +3528,7 @@ export default async function (args, { paths: p, stdout, stderr }) {
     stderr.write(`${e.message}\n`); return 2;
   }
   const url = parsed.positionals[0];
-  if (!url) { stderr.write('usage: deployd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C]\n'); return 2; }
+  if (!url) { stderr.write('usage: remote-deploy add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C]\n'); return 2; }
   const gh = parseRepoUrl(url);
   const name = parsed.values.name ?? gh?.name;
   if (!name) { stderr.write(`cannot derive a name from ${url}; pass --name\n`); return 1; }
@@ -3542,7 +3542,7 @@ export default async function (args, { paths: p, stdout, stderr }) {
 
   const dir = p.repoDir(name);
   await fs.mkdir(dir, { recursive: true });
-  await chownDeployd(dir, { mode: 0o750 });
+  await chownRemoteDeploy(dir, { mode: 0o750 });
   // A deploy key attaches to exactly one repository. A key shared across repos can
   // only be a machine user's, so --key skips generation and changes the instruction.
   const sharedKey = parsed.values.key ?? null;
@@ -3551,9 +3551,9 @@ export default async function (args, { paths: p, stdout, stderr }) {
     try { await fs.stat(sharedKey); } catch { stderr.write(`--key ${sharedKey}: no such file\n`); return 1; }
   } else {
     try { await fs.stat(key); } catch {
-      await run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', `deployd@${os.hostname()}`, '-f', key]);
-      await chownDeployd(key, { mode: 0o600 });
-      await chownDeployd(`${key}.pub`, { mode: 0o644 });
+      await run('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', `remote-deploy@${os.hostname()}`, '-f', key]);
+      await chownRemoteDeploy(key, { mode: 0o600 });
+      await chownRemoteDeploy(`${key}.pub`, { mode: 0o644 });
     }
   }
   const pub = (await fs.readFile(`${key}.pub`, 'utf8').catch(() => '')).trim();
@@ -3574,7 +3574,7 @@ export default async function (args, { paths: p, stdout, stderr }) {
   ];
   await fs.mkdir(p.reposDir, { recursive: true });
   await fs.writeFile(conf, lines.join('\n') + '\n');
-  await chownDeployd(conf, { mode: 0o640, root: true });
+  await chownRemoteDeploy(conf, { mode: 0o640, root: true });
 
   const ghRepo = gh ? `${gh.owner}/${gh.repo}` : '<owner>/<repo>';
   const keyStep = sharedKey
@@ -3599,7 +3599,7 @@ ${keyStep}
      -f config[url]=https://${host}/deploy -f config[content_type]=json \\
      -f "config[secret]=$(sudo sed -n 's/^WEBHOOK_SECRET=//p' ${p.mainConf})"
 
-3. edit ${conf}, then:  deployd check ${name}
+3. edit ${conf}, then:  remote-deploy check ${name}
 `);
   return 0;
 }
@@ -3615,14 +3615,14 @@ import { sendCommand } from '../socket.mjs';
 export default async function (args, { paths: p, stdout, stderr, sendOverride }) {
   const name = args.find((a) => !a.startsWith('--'));
   const setRemote = args.includes('--set-remote');
-  if (!name) { stderr.write('usage: deployd check <name> [--set-remote]\n'); return 2; }
+  if (!name) { stderr.write('usage: remote-deploy check <name> [--set-remote]\n'); return 2; }
   try { checkName(name); } catch (e) { stderr.write(`${e.message}\n`); return 1; }
   const send = sendOverride ?? ((m) => sendCommand(p.sock, m, { timeoutMs: 600000 }));
   let reply;
   try {
     reply = await send({ cmd: 'check', name, setRemote });
   } catch (e) {
-    stderr.write(`service down (${e.code ?? e.message}); is deployd.service running?\n`);
+    stderr.write(`service down (${e.code ?? e.message}); is remote-deploy.service running?\n`);
     return 3;
   }
   if (!reply.ok) { stderr.write(`${reply.error}\n`); return 1; }
@@ -3638,19 +3638,19 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseKV, ConfigError, loadRepo } from '../config.mjs';
-import { chownDeployd } from '../owner.mjs';
+import { chownRemoteDeploy } from '../owner.mjs';
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 async function writeAtomic(file, text) {
   await fs.writeFile(`${file}.tmp`, text, { mode: 0o640 });
-  await chownDeployd(`${file}.tmp`, { mode: 0o640, root: true });
+  await chownRemoteDeploy(`${file}.tmp`, { mode: 0o640, root: true });
   await fs.rename(`${file}.tmp`, file);
 }
 
 export default async function (args, { paths: p, stdout, stderr }) {
   const [name, phase, ...rest] = args;
-  if (!name || !['build', 'deploy'].includes(phase)) { stderr.write('usage: deployd env <name> build|deploy [--set K=V] [--unset K]\n'); return 2; }
+  if (!name || !['build', 'deploy'].includes(phase)) { stderr.write('usage: remote-deploy env <name> build|deploy [--set K=V] [--unset K]\n'); return 2; }
   const sets = [];
   const unsets = [];
   for (let i = 0; i < rest.length; i++) {
@@ -3663,14 +3663,14 @@ export default async function (args, { paths: p, stdout, stderr }) {
   const file = phase === 'build' ? repo.buildEnvFile : repo.deployEnvFile;
   await fs.mkdir(path.dirname(file), { recursive: true });
   try { await fs.stat(file); } catch { await writeAtomic(file, ''); }
-  await chownDeployd(file, { mode: 0o640, root: true });
+  await chownRemoteDeploy(file, { mode: 0o640, root: true });
 
   const label = `${name}.${phase}`;
   const report = (kv) => stdout.write(`${label}: ${[...kv.keys()].join(' ') || '(empty)'}\n`);
 
   if (sets.length || unsets.length) {
     let kv;
-    try { kv = parseKV(await fs.readFile(file, 'utf8'), null); } catch (e) { stderr.write(`${file}: ${e.message}; fix it with: sudo deployd env ${name} ${phase}\n`); return 1; }
+    try { kv = parseKV(await fs.readFile(file, 'utf8'), null); } catch (e) { stderr.write(`${file}: ${e.message}; fix it with: sudo remote-deploy env ${name} ${phase}\n`); return 1; }
     for (const s of sets) {
       const eq = s?.indexOf('=') ?? -1;
       const k = eq > 0 ? s.slice(0, eq) : '';
@@ -3688,7 +3688,7 @@ export default async function (args, { paths: p, stdout, stderr }) {
   const editor = process.env.EDITOR || process.env.VISUAL || 'vi';
   const draft = `${file}.edit`;
   await fs.copyFile(file, draft);
-  await chownDeployd(draft, { mode: 0o640, root: true });
+  await chownRemoteDeploy(draft, { mode: 0o640, root: true });
   try {
     for (;;) {
       const r = spawnSync(editor, [draft], { stdio: 'inherit', shell: editor.includes(' ') });
@@ -3717,8 +3717,8 @@ import { sendCommand } from '../socket.mjs';
 
 export default async function (args, { paths: p, stdout, stderr, statusOverride }) {
   const name = args[0];
-  if (!name) { stderr.write('usage: deployd remove <name>\n'); return 2; }
-  const conf = p.repoConf(name);   // validates the name: "../deployd" dies here
+  if (!name) { stderr.write('usage: remote-deploy remove <name>\n'); return 2; }
+  const conf = p.repoConf(name);   // validates the name: "../remote-deploy" dies here
   try { await fs.stat(conf); } catch { stderr.write(`no repo named ${name}\n`); return 1; }
   let st = null;
   try { st = await (statusOverride ?? ((m) => sendCommand(p.sock, m, { timeoutMs: 1500 })))({ cmd: 'status' }); } catch { /* service down: nothing can be running */ }
@@ -3761,12 +3761,12 @@ Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
 ### Task 15: Installer, unit file, logrotate, README
 
 **Files:**
-- Create: `install.sh`, `deployd.service`, `deployd.logrotate`, `README.md`
+- Create: `install.sh`, `remote-deploy.service`, `remote-deploy.logrotate`, `README.md`
 - Test: `test/install.test.mjs` (static checks only: the installer needs root and a real box)
 
 **Interfaces:**
-- Consumes: `bin/deployd serve`
-- Produces: `sudo /opt/deployd/install.sh [--host NAME]`, idempotent, as spec section 8.
+- Consumes: `bin/remote-deploy serve`
+- Produces: `sudo /opt/remote-deploy/install.sh [--host NAME]`, idempotent, as spec section 8.
 
 - [ ] **Step 1: Write the failing static test**
 
@@ -3792,14 +3792,14 @@ test('install.sh parses under sh -n and its first real step is the root check', 
 });
 
 test('unit file and logrotate say what the spec says', async () => {
-  const unit = await fs.readFile('deployd.service', 'utf8');
-  assert.match(unit, /^User=deployd$/m);
-  assert.match(unit, /^ExecStart=\/opt\/deployd\/bin\/deployd serve$/m);
-  assert.match(unit, /^RuntimeDirectory=deployd$/m);
+  const unit = await fs.readFile('remote-deploy.service', 'utf8');
+  assert.match(unit, /^User=remote-deploy$/m);
+  assert.match(unit, /^ExecStart=\/opt\/remote-deploy\/bin\/remote-deploy serve$/m);
+  assert.match(unit, /^RuntimeDirectory=remote-deploy$/m);
   assert.match(unit, /^Restart=on-failure$/m);
   assert.match(unit, /^KillMode=mixed$/m);
-  const lr = await fs.readFile('deployd.logrotate', 'utf8');
-  assert.match(lr, /\/var\/log\/deployd\/\*\/events\.log/);
+  const lr = await fs.readFile('remote-deploy.logrotate', 'utf8');
+  assert.match(lr, /\/var\/log\/remote-deploy\/\*\/events\.log/);
   assert.match(lr, /monthly/);
   assert.match(lr, /rotate 12/);
 });
@@ -3814,9 +3814,9 @@ Expected: FAIL, `install.sh` not found
 
 ```sh
 #!/bin/sh
-# install.sh -- set up deployd on this box. Idempotent: every step is skip-if-present.
+# install.sh -- set up remote-deploy on this box. Idempotent: every step is skip-if-present.
 #
-#   sudo /opt/deployd/install.sh [--host deploy.example.com]
+#   sudo /opt/remote-deploy/install.sh [--host deploy.example.com]
 #
 # --host installs and wires Caddy for that name. The name must already resolve
 # to this box. Without --host, everything else happens and the Caddy block is
@@ -3845,20 +3845,20 @@ NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
 command -v ssh-keygen >/dev/null || { echo "ssh-keygen is required: apt install openssh-client" >&2; exit 1; }
 
 # 2. user
-if ! id deployd >/dev/null 2>&1; then
-  useradd --system --home-dir /var/lib/deployd --shell /usr/sbin/nologin --user-group deployd
-  say "created user deployd"
+if ! id remote-deploy >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/remote-deploy --shell /usr/sbin/nologin --user-group remote-deploy
+  say "created user remote-deploy"
 fi
 
 # 3. trees
-install -d -m 0750 -o root -g deployd /etc/deployd /etc/deployd/repos /etc/deployd/env
-install -d -m 0750 -o deployd -g deployd /var/lib/deployd /var/lib/deployd/.ssh /var/log/deployd
-say "created /etc/deployd  /var/lib/deployd  /var/log/deployd"
+install -d -m 0750 -o root -g remote-deploy /etc/remote-deploy /etc/remote-deploy/repos /etc/remote-deploy/env
+install -d -m 0750 -o remote-deploy -g remote-deploy /var/lib/remote-deploy /var/lib/remote-deploy/.ssh /var/log/remote-deploy
+say "created /etc/remote-deploy  /var/lib/remote-deploy  /var/log/remote-deploy"
 
 # 4. main config
-if [ ! -f /etc/deployd/deployd.conf ]; then
+if [ ! -f /etc/remote-deploy/remote-deploy.conf ]; then
   SECRET=$(node -p 'require("crypto").randomBytes(32).toString("hex")')
-  ( umask 027; cat > /etc/deployd/deployd.conf <<EOF
+  ( umask 027; cat > /etc/remote-deploy/remote-deploy.conf <<EOF
 LISTEN=127.0.0.1:9000
 ${HOST:+PUBLIC_HOST=$HOST}
 WEBHOOK_SECRET=$SECRET
@@ -3867,42 +3867,42 @@ LOG_KEEP=50
 LOG_MAX_BYTES=52428800
 EOF
   )
-  sed -i '/^$/d' /etc/deployd/deployd.conf
-  chown root:deployd /etc/deployd/deployd.conf; chmod 0640 /etc/deployd/deployd.conf
-  say "wrote /etc/deployd/deployd.conf  (LISTEN=127.0.0.1:9000, new WEBHOOK_SECRET)"
+  sed -i '/^$/d' /etc/remote-deploy/remote-deploy.conf
+  chown root:remote-deploy /etc/remote-deploy/remote-deploy.conf; chmod 0640 /etc/remote-deploy/remote-deploy.conf
+  say "wrote /etc/remote-deploy/remote-deploy.conf  (LISTEN=127.0.0.1:9000, new WEBHOOK_SECRET)"
 elif [ -n "$HOST" ]; then
-  if grep -q '^PUBLIC_HOST=' /etc/deployd/deployd.conf; then
-    sed -i "s|^PUBLIC_HOST=.*|PUBLIC_HOST=$HOST|" /etc/deployd/deployd.conf
+  if grep -q '^PUBLIC_HOST=' /etc/remote-deploy/remote-deploy.conf; then
+    sed -i "s|^PUBLIC_HOST=.*|PUBLIC_HOST=$HOST|" /etc/remote-deploy/remote-deploy.conf
   else
-    printf 'PUBLIC_HOST=%s\n' "$HOST" >> /etc/deployd/deployd.conf
+    printf 'PUBLIC_HOST=%s\n' "$HOST" >> /etc/remote-deploy/remote-deploy.conf
   fi
-  say "set PUBLIC_HOST=$HOST in /etc/deployd/deployd.conf"
+  say "set PUBLIC_HOST=$HOST in /etc/remote-deploy/remote-deploy.conf"
 fi
 
 # 5. GitHub host keys
-if [ ! -s /var/lib/deployd/.ssh/known_hosts ]; then
+if [ ! -s /var/lib/remote-deploy/.ssh/known_hosts ]; then
   KEYS=$(curl -fsS https://api.github.com/meta | node -e '
     let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
       const m=JSON.parse(s); for (const k of m.ssh_keys) console.log("github.com " + k); })') \
     || { echo "could not fetch GitHub host keys from api.github.com/meta; refusing to write an empty known_hosts" >&2; exit 1; }
-  printf '%s\n' "$KEYS" > /var/lib/deployd/.ssh/known_hosts
-  chown deployd:deployd /var/lib/deployd/.ssh/known_hosts; chmod 0644 /var/lib/deployd/.ssh/known_hosts
+  printf '%s\n' "$KEYS" > /var/lib/remote-deploy/.ssh/known_hosts
+  chown remote-deploy:remote-deploy /var/lib/remote-deploy/.ssh/known_hosts; chmod 0644 /var/lib/remote-deploy/.ssh/known_hosts
   say "wrote known_hosts from api.github.com/meta"
 fi
 
 # 6. service
-install -m 0644 "$HERE/deployd.service" /etc/systemd/system/deployd.service
+install -m 0644 "$HERE/remote-deploy.service" /etc/systemd/system/remote-deploy.service
 systemctl daemon-reload
-systemctl enable --now deployd >/dev/null 2>&1 || systemctl restart deployd
-say "enabled deployd.service"
+systemctl enable --now remote-deploy >/dev/null 2>&1 || systemctl restart remote-deploy
+say "enabled remote-deploy.service"
 
 # 7. command
-ln -sfn "$HERE/bin/deployd" /usr/local/bin/deployd
-chmod +x "$HERE/bin/deployd"
-say "linked /usr/local/bin/deployd"
+ln -sfn "$HERE/bin/remote-deploy" /usr/local/bin/remote-deploy
+chmod +x "$HERE/bin/remote-deploy"
+say "linked /usr/local/bin/remote-deploy"
 
 # 8. logrotate
-install -m 0644 "$HERE/deployd.logrotate" /etc/logrotate.d/deployd
+install -m 0644 "$HERE/remote-deploy.logrotate" /etc/logrotate.d/remote-deploy
 
 # 9. Caddy
 CADDY_BLOCK="${HOST:-deploy.example.com} {
@@ -3927,9 +3927,9 @@ if [ -n "$HOST" ]; then
     fi
   fi
   install -d -m 0755 /etc/caddy/conf.d
-  printf '%s\n' "$CADDY_BLOCK" > /etc/caddy/conf.d/deployd.caddy
-  chmod 0644 /etc/caddy/conf.d/deployd.caddy   # root's umask may be 077; caddy runs as its own user
-  say "wrote /etc/caddy/conf.d/deployd.caddy  for $HOST"
+  printf '%s\n' "$CADDY_BLOCK" > /etc/caddy/conf.d/remote-deploy.caddy
+  chmod 0644 /etc/caddy/conf.d/remote-deploy.caddy   # root's umask may be 077; caddy runs as its own user
+  say "wrote /etc/caddy/conf.d/remote-deploy.caddy  for $HOST"
   if ! grep -qE '^\s*import\s+(/etc/caddy/)?conf\.d/\*' /etc/caddy/Caddyfile 2>/dev/null; then
     printf '\nimport /etc/caddy/conf.d/*\n' >> /etc/caddy/Caddyfile
     say 'added "import /etc/caddy/conf.d/*" to /etc/caddy/Caddyfile'
@@ -3938,10 +3938,10 @@ if [ -n "$HOST" ]; then
   systemctl reload caddy || systemctl restart caddy
   say "reloaded caddy"
   # Prove the path end to end: a ping signed with this box's secret gets "pong"
-  # from deployd and nothing else. (Caddy stamps its own Server header on proxied
+  # from remote-deploy and nothing else. (Caddy stamps its own Server header on proxied
   # responses too, so a bare 404 could never tell the two apart.)
   sleep 2
-  SECRET=$(sed -n 's/^WEBHOOK_SECRET=//p' /etc/deployd/deployd.conf)
+  SECRET=$(sed -n 's/^WEBHOOK_SECRET=//p' /etc/remote-deploy/remote-deploy.conf)
   BODY='{"zen":"install check"}'
   SIG=$(printf '%s' "$BODY" | node -e '
     let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
@@ -3951,15 +3951,15 @@ if [ -n "$HOST" ]; then
   if [ "$ANSWER" = "pong" ]; then
     say "POST https://$HOST/deploy (signed ping)  ->  pong   ok"
   else
-    say "POST https://$HOST/deploy (signed ping)  ->  '$ANSWER'   NOT OK: check DNS for $HOST, 'journalctl -u caddy', 'journalctl -u deployd'"
+    say "POST https://$HOST/deploy (signed ping)  ->  '$ANSWER'   NOT OK: check DNS for $HOST, 'journalctl -u caddy', 'journalctl -u remote-deploy'"
   fi
 fi
 
 cat <<EOF
 
 sudoers, for a DEPLOY command that needs root (one script, no password):
-  echo 'deployd ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/deployd
-  chmod 0440 /etc/sudoers.d/deployd
+  echo 'remote-deploy ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/remote-deploy
+  chmod 0440 /etc/sudoers.d/remote-deploy
 EOF
 if [ -z "$HOST" ]; then
   cat <<EOF
@@ -3970,27 +3970,27 @@ or re-run:  sudo $0 --host deploy.example.com
 EOF
 fi
 say ""
-say "next: sudo deployd add <git-url>"
+say "next: sudo remote-deploy add <git-url>"
 ```
 
 ```ini
-# deployd.service
+# remote-deploy.service
 [Unit]
-Description=deployd: build-on-push for this box
+Description=remote-deploy: build-on-push for this box
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=deployd
-Group=deployd
-ExecStart=/opt/deployd/bin/deployd serve
-WorkingDirectory=/var/lib/deployd
-RuntimeDirectory=deployd
+User=remote-deploy
+Group=remote-deploy
+ExecStart=/opt/remote-deploy/bin/remote-deploy serve
+WorkingDirectory=/var/lib/remote-deploy
+RuntimeDirectory=remote-deploy
 RuntimeDirectoryMode=0750
 Restart=on-failure
 RestartSec=3
-# SIGTERM goes to deployd only; it kills the build's process group itself and records "interrupted".
+# SIGTERM goes to remote-deploy only; it kills the build's process group itself and records "interrupted".
 KillMode=mixed
 TimeoutStopSec=30
 
@@ -3998,57 +3998,57 @@ TimeoutStopSec=30
 WantedBy=multi-user.target
 ```
 
-No `ProtectSystem`, `ProtectHome`, or `NoNewPrivileges` hardening: a DEPLOY command that runs `sudo` to install a unit or write under `/etc` is a child of this service and would inherit a read-only `/etc` from `ProtectSystem`. The service already runs as an unprivileged user; the sudoers line is the boundary. `RuntimeDirectory=deployd` is why the socket lives at `/run/deployd/deployd.sock` (Task 1).
+No `ProtectSystem`, `ProtectHome`, or `NoNewPrivileges` hardening: a DEPLOY command that runs `sudo` to install a unit or write under `/etc` is a child of this service and would inherit a read-only `/etc` from `ProtectSystem`. The service already runs as an unprivileged user; the sudoers line is the boundary. `RuntimeDirectory=remote-deploy` is why the socket lives at `/run/remote-deploy/remote-deploy.sock` (Task 1).
 
 ```
-# deployd.logrotate  ->  /etc/logrotate.d/deployd
-/var/log/deployd/*/events.log {
+# remote-deploy.logrotate  ->  /etc/logrotate.d/remote-deploy
+/var/log/remote-deploy/*/events.log {
     monthly
     rotate 12
     compress
     delaycompress
     missingok
     notifempty
-    create 0640 deployd deployd
+    create 0640 remote-deploy remote-deploy
 }
 ```
 
 ```markdown
-# deployd
+# remote-deploy
 
 Build-on-push for a box you own. Push to a branch; the server fetches, builds,
 flips a symlink, and runs your deploy command. One file per repo, one webhook,
 no npm dependencies.
 
-Design: `docs/superpowers/specs/2026-09-05-deployd-design.md`.
+Design: `docs/superpowers/specs/2026-09-05-remote-deploy-design.md`.
 
 ## Install (once per server)
 
-    git clone git@github.com:sftinc/remote-deploy.git /opt/deployd
-    sudo /opt/deployd/install.sh --host deploy.example.com
+    git clone git@github.com:sftinc/remote-deploy.git /opt/remote-deploy
+    sudo /opt/remote-deploy/install.sh --host deploy.example.com
 
 `--host` needs a name that already points at the box; it installs Caddy, wires
 TLS, and checks the path. Without it, the Caddy block is printed to paste.
 
 ## Add a repo
 
-    sudo deployd add git@github.com:you/app.git --root . 
+    sudo remote-deploy add git@github.com:you/app.git --root . 
     # paste the deploy key and the webhook it prints (or run the two gh lines)
-    sudo vi /etc/deployd/repos/app.conf        # BUILD and DEPLOY
-    deployd check app
+    sudo vi /etc/remote-deploy/repos/app.conf        # BUILD and DEPLOY
+    remote-deploy check app
 
 ## Every day
 
-    deployd status
-    deployd check app || echo "app is behind or pending"   # exit 4 = lost webhook or unconfirmed deploy; put it in cron
-    deployd log app [--follow]
-    deployd run app          # build now, ignoring filters
-    deployd rollback app     # back to the last confirmed release
-    sudo deployd env app build --set NPM_TOKEN=...
+    remote-deploy status
+    remote-deploy check app || echo "app is behind or pending"   # exit 4 = lost webhook or unconfirmed deploy; put it in cron
+    remote-deploy log app [--follow]
+    remote-deploy run app          # build now, ignoring filters
+    remote-deploy rollback app     # back to the last confirmed release
+    sudo remote-deploy env app build --set NPM_TOKEN=...
 
-## Upgrade deployd
+## Upgrade remote-deploy
 
-    git -C /opt/deployd pull && sudo systemctl restart deployd
+    git -C /opt/remote-deploy pull && sudo systemctl restart remote-deploy
 
 ## Tests
 
@@ -4065,7 +4065,7 @@ Expected: every file passes, including the new static install test.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add install.sh deployd.service deployd.logrotate README.md test/install.test.mjs
+git add install.sh remote-deploy.service remote-deploy.logrotate README.md test/install.test.mjs
 git commit -m "Install: idempotent installer with --host for Caddy, unit file, logrotate, README
 
 Claude-Session: https://claude.ai/code/session_01MkA6uaCA5bramSFqGdSGYj"
