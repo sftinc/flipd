@@ -1,10 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
-import { makePrefix, writeMain, writeRepoConf } from './helpers.mjs';
-import { parseKV } from '../lib/config.mjs';
+import { makePrefix, tmpdir, writeMain, writeRepoConf } from './helpers.mjs';
+import { parseKV, loadEnvFile } from '../lib/config.mjs';
 import add, { parseRepoUrl } from '../lib/cli/add.mjs';
 import check from '../lib/cli/check.mjs';
 import env from '../lib/cli/env.mjs';
@@ -142,14 +141,23 @@ test('env --set refuses a value containing a newline, naming only the key', asyn
   assert.equal(await fs.readFile(p.envFile('r', 'build'), 'utf8'), '', 'the file is untouched by the rejected value');
 });
 
-test('env: an unrecognized argument after --set is never echoed together with its value', async () => {
+test('env: an unrecognized argument never echoes any part of the token, however it is shaped', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
-  const bad = io();
-  // The textbook 3am typo: a forgotten second "--set" before "SECOND=...".
-  assert.equal(await env(['r', 'build', '--set', 'TOK=abc', 'SECOND=supersecret'], { paths: p, ...bad }), 2);
-  assert.match(bad.err(), /SECOND/);
-  assert.ok(!bad.err().includes('supersecret'), 'the value half of the stray token is never echoed');
+  const cases = [
+    // The textbook 3am typo: a forgotten second "--set" before "SECOND=...".
+    { argv: ['r', 'build', '--set', 'TOK=abc', 'SECOND=supersecret'], leaked: ['SECOND', 'supersecret'] },
+    // A space instead of "=" — a prefix-cut-at-"=" fix still leaks this whole.
+    { argv: ['r', 'build', '--set', 'TOK', 'abc123secret'], leaked: ['abc123secret'] },
+    // Base64 whose only "=" is padding — cutting at the first "=" leaks everything before it.
+    { argv: ['r', 'build', '--set', 'TOK=abc', 'c2VjcmV0dmFsdWU='], leaked: ['c2VjcmV0dmFsdWU'] },
+  ];
+  for (const { argv, leaked } of cases) {
+    const bad = io();
+    assert.equal(await env(argv, { paths: p, ...bad }), 2);
+    assert.match(bad.err(), /unknown argument at position/);
+    for (const fragment of leaked) assert.ok(!bad.err().includes(fragment), `"${fragment}" must not appear in: ${bad.err()}`);
+  }
 });
 
 test('env --unset with no key argument is refused, not a silent no-op write', async () => {
@@ -175,7 +183,7 @@ test('env --set preserves comments and blank lines, and trims a padded value whi
 test('env: the $EDITOR path writes on a clean parse and refuses to loop without a tty on a malformed draft', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'rd-editor-'));
+  const scratch = await tmpdir('rd-editor');
   const goodEditor = path.join(scratch, 'good.sh');
   await fs.writeFile(goodEditor, '#!/bin/sh\nprintf "NEW=1\\n" > "$1"\n');
   await fs.chmod(goodEditor, 0o755);
@@ -250,4 +258,44 @@ test('add treats stray extra positionals (an unquoted multi-word --build/--deplo
   const o = io();
   assert.equal(await add(['git@github.com:o/z3.git', '--build', 'npm', 'ci', '--deploy', 'sudo', 'systemctl', 'restart', 'r'], { paths: p, ...o }), 2);
   await assert.rejects(fs.stat(p.repoDir('z3')));
+});
+
+test('add --key naming a missing file leaves no directory behind', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const o = io();
+  assert.equal(await add(['git@github.com:o/z4.git', '--key', '/nonexistent'], { paths: p, ...o }), 1);
+  await assert.rejects(fs.stat(p.repoDir('z4')), 'a rejected invocation must leave no partial state, not even an empty directory');
+});
+
+test('env --set on a duplicated key replaces the first line, deletes every later one, and the new value is what loadEnvFile returns', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  const file = p.envFile('app', 'build');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  // parseKV is last-wins, so this file already reads as NPM_TOKEN=leaked_old
+  // today — a duplicate reachable through $EDITOR (parseKV accepts it without
+  // complaint) or a plain `tee -a`.
+  await fs.writeFile(file, 'NPM_TOKEN=leaked_old\nNPM_TOKEN=leaked_old\n');
+  const o = io();
+  assert.equal(await env(['app', 'build', '--set', 'NPM_TOKEN=rotated_new'], { paths: p, ...o }), 0);
+  const text = await fs.readFile(file, 'utf8');
+  assert.equal(text, 'NPM_TOKEN=rotated_new\n', 'the duplicate is collapsed, not left to shadow the new value');
+  assert.match(o.out(), /collapsed.*NPM_TOKEN/);
+  assert.ok(!o.out().includes('leaked_old') && !o.out().includes('rotated_new'), 'the collapse note names the key only');
+  assert.match(o.out(), /app\.build: NPM_TOKEN/);
+  // The actual end-to-end property: what a run will load is the rotated
+  // value, not the leaked one a naive first-match-only replace would leave
+  // live underneath it.
+  const kv = await loadEnvFile(file);
+  assert.equal(kv.get('NPM_TOKEN'), 'rotated_new');
+});
+
+test('env: --set and --unset on the same key in one call is refused as ambiguous, not silently order-dependent', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  const bad = io();
+  assert.equal(await env(['r', 'build', '--unset', 'TOK', '--set', 'TOK=1'], { paths: p, ...bad }), 2);
+  assert.match(bad.err(), /TOK/);
+  await assert.rejects(fs.stat(p.envFile('r', 'build')), 'the ambiguous call is refused before the env file is even created');
 });
