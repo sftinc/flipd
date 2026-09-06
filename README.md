@@ -101,6 +101,12 @@ which is how the `ssh://` URLs such a forge renders look it up. The API base
 defaults to `https://api.github.com` for GitHub and `https://<host>/api/v1`
 otherwise; `--api` overrides it and must be `https://`.
 
+The key `account add` records is for the host in the URL — the forge's web
+and API host. Forgejo and Gitea have a separate `SSH_DOMAIN` setting, so a
+repository's `ssh_url` can name a different one; when it does, `add` names
+that host and prints the `ssh-keyscan` command to record it, and its
+fingerprint needs the same comparison before the first build.
+
 `flipd account remove <host>` deletes the account. Repos on that host go back
 to the manual `add` flow; nothing already added changes.
 
