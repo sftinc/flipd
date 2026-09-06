@@ -228,13 +228,18 @@ test('a push while pending is refused with 200', async () => {
   const dir = p.repoDir('r');
   await fs.mkdir(dir, { recursive: true });
   await writeState(dir, { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha: 'x' }, b: { sha: 'y' } } });
-  const svc = await serve({ paths: p, journal: () => {} });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
   try {
     const body = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: src.url } });
     const sig = 'sha256=' + createHmac('sha256', 'testsecret').update(body).digest('hex');
     const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sig, 'x-github-event': 'push' } });
     assert.equal(res.status, 200);
     assert.match(await res.text(), /refused/);
+    // Both sinks, like the unreadable-state refusal: events.log is the repo's
+    // record, journald is where an operator is looking.
+    assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /refused pending b; run flipd rollback r or flipd run r\n/);
+    assert.ok(lines.some((l) => l === '[r] refused a push: pending b; run flipd rollback r or flipd run r'), `the refusal is in journald: ${lines}`);
   } finally {
     await svc.close();
   }
@@ -550,6 +555,8 @@ test('a push during shutdown is refused with 503, not answered 202 for work that
     assert.equal(res.status, 503);
     assert.equal(await res.text(), 'refused r2 (stopping)');
     assert.match(await fs.readFile(path.join(p.repoLog('r2'), 'events.log'), 'utf8'), /refused stopping\n/);
+    // A shutdown is when an operator is on journalctl, not in a per-repo file.
+    assert.ok(lines.some((l) => l === '[r2] refused a push: stopping; redeliver it from GitHub once flipd is back'), `the refusal is in journald: ${lines}`);
   } finally {
     await closing;
   }
