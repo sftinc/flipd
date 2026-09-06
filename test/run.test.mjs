@@ -6,7 +6,8 @@ import path from 'node:path';
 import { makePrefix, makeSourceRepo, writeRepoConf } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
 import { readState, writeState } from '../lib/state.mjs';
-import { runEntry, resolveRollbackTarget } from '../lib/run.mjs';
+import { runEntry, runOnFailure, resolveRollbackTarget } from '../lib/run.mjs';
+import { runCheck } from '../lib/check.mjs';
 import { gitEnv, setRemoteUrl } from '../lib/git.mjs';
 
 const MAIN = { listen: { host: '127.0.0.1', port: 0 }, publicHost: null, webhookSecret: 's', keep: 5, logKeep: 50, logMaxBytes: 52428800 };
@@ -436,6 +437,61 @@ test('ON_FAILURE output masks a build secret too, not only this attempt\'s deplo
   assert.match(ev, /notified .* exit 0  token=\*\*\*/);
 });
 
+test('runOnFailure masks the error message on its failure path too, not only the notifier\'s output', async () => {
+  // runOnFailure writes to events.log twice: once with the notifier's output,
+  // which has always been scrubbed, and once — from its catch arm — with the
+  // message of whatever went wrong instead. That second line is the one sink in
+  // this module a secret could still reach.
+  //
+  // The failure is injected rather than provoked, deliberately: the realistic
+  // throws in this try (a spawn that fails, a missing directory) carry paths in
+  // their messages, not env values, so provoking one would test that the
+  // scrubber ran on text with nothing to find. What has to hold is the general
+  // property — an error message that quotes something masked is masked before it
+  // is written — so the injected message quotes exactly that.
+  const t = await setup();
+  const secret = 'deploysecret99';
+  const repo = { ...t.repo, onFailure: 'true' };
+  const paths = { ...t.p, repoDir: () => { throw new Error(`cannot open the working directory for ${secret}`); } };
+  await runOnFailure({ paths, journal: () => {} }, repo, {
+    attemptId: 'injected-attempt', outcome: 'build failed', sha: null, releaseId: null, logFile: null,
+    envFile: new Map([['TOK_D', secret]]), mask: [secret],
+  });
+  const ev = await t.events();
+  assert.match(ev, /notified injected-attempt failed to run: cannot open the working directory for \*\*\*/);
+  assert.ok(!ev.includes(secret), 'the catch arm masks before it writes, like the success arm');
+});
+
+test('prune\'s worktree removal carries the shutdown signal: it is interrupted, not run to completion', async () => {
+  // prune runs inside the work close() drains, so its git calls must be
+  // abortable. The observable difference between an aborted removal and a
+  // completed one is the bare clone's worktree admin directory: `git worktree
+  // remove` deletes <gitDir>/worktrees/<id>, and a removal killed before it gets
+  // there leaves that entry behind for the next attempt's `worktree prune`.
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });   // a: becomes live
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });   // b: live, a is previous
+  const doomed = (await t.state()).previous;              // a: about to lose its protection
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });   // c: live, b previous, a a candidate
+  const admin = path.join(t.p.repoDir('r'), 'git', 'worktrees');
+  assert.ok((await fs.readdir(admin)).includes(doomed), 'the clone knows about that worktree to begin with');
+
+  // Now a shutdown: the attempt itself is interrupted before it builds anything,
+  // and step 7 still prunes — with the signal already aborted.
+  const ac = new AbortController();
+  ac.abort();
+  t.ctx.signal = ac.signal;
+  t.ctx.main = { ...MAIN, keep: 0 };
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'interrupted');
+  await assert.rejects(fs.stat(path.join(t.p.repoDir('r'), 'releases', doomed)), 'the directory is removed either way');
+  assert.ok((await fs.readdir(admin)).includes(doomed), 'the removal was killed by the shutdown signal rather than completing');
+
+  // And it is transient, not a leak: the next attempt's `worktree prune` clears it.
+  t.ctx.signal = undefined;
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });
+  assert.ok(!(await fs.readdir(admin)).includes(doomed), 'the next attempt clears the stale admin entry');
+});
+
 test('a malformed env line is not echoed verbatim into the attempt log', async () => {
   const t = await setup();
   await fs.writeFile(t.p.envFile('r', 'build'), 'thisisasecretlookingvalue\n');
@@ -479,6 +535,23 @@ test('a credential left in the clone\'s origin is redacted in every sink, not ju
   }
   assert.match(log, /clone has https:\/\/\*\*\*@127\.0\.0\.1:1\/o\/r\.git/);
   assert.match(ev, /fetch-failed .*clone has https:\/\/\*\*\*@/);
+});
+
+test('check redacts a credential left in the clone\'s stored origin before printing its rows', async () => {
+  // The same defect as the test above, in the other command that prints what
+  // `git remote get-url` returned. check's rows go straight to the operator's
+  // terminal, and config's refusal cannot reach a clone that was created before
+  // that refusal existed.
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const gitDir = path.join(t.p.repoDir('r'), 'git');
+  const gopts = { env: gitEnv({ key: '/nonexistent/key', knownHosts: t.p.knownHosts, home: t.p.lib }) };
+  await setRemoteUrl(gitDir, 'https://x-access-token:ghp_TOPSECRETTOKEN@127.0.0.1:1/o/r.git', gopts);
+  const r = await runCheck({ paths: t.p, repo: t.repo, journal: () => {} }, {});
+  const text = r.rows.map(([k, v]) => `${k} ${v}`).join('\n');
+  assert.equal(r.passed, false, 'a mismatched remote is a failed row');
+  assert.match(text, /MISMATCH {2}clone has https:\/\/\*\*\*@127\.0\.0\.1:1\/o\/r\.git/);
+  assert.ok(!text.includes('ghp_TOPSECRETTOKEN'), `the credential must not reach check's rows: ${text}`);
 });
 
 test('a masked value in a fetch-failure detail is masked in events.log too, not only in the attempt log', async () => {

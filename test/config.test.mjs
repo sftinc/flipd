@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { paths } from '../lib/paths.mjs';
-import { ConfigError, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile } from '../lib/config.mjs';
+import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile } from '../lib/config.mjs';
 
 test('parseKV: trims, ignores blanks and comments, keeps everything after the first =', () => {
   const m = parseKV('  A = 1 \n\n# note\nB=x=y && $Z\n', null);
@@ -13,21 +13,37 @@ test('parseKV: trims, ignores blanks and comments, keeps everything after the fi
 });
 
 test('parseKV: unknown key and malformed line name the line', () => {
-  assert.throws(() => parseKV('A=1\nBUILD_CMD=x', new Set(['A'])), (e) => e instanceof ConfigError && /line 2.*BUILD_CMD/.test(e.message));
+  assert.throws(() => parseKV('A=1\nBUILD_CMD=x', new Set(['A'])), (e) => e instanceof ConfigError && /^line 2: unknown key$/.test(e.message));
   assert.throws(() => parseKV('nonsense', null), /line 1/);
 });
 
-test('parseKV: a malformed line is reported by number only, never by quoting the line', () => {
-  // The line that failed to parse is the one line no mask can cover: a file
-  // that did not parse contributes nothing to the attempt log's mask, and
-  // remote-deploy.conf's malformed line is the WEBHOOK_SECRET itself. This
-  // message reaches journald (through serve's startup), the operator's
-  // terminal, and the attempt log, so it must carry the number and nothing else.
-  for (const line of ['sk_live_TOPSECRET', '  "private_key": "sk_live_TOPSECRET",', 'hunter2']) {
-    assert.throws(() => parseKV(line, null), (e) => {
+test('parseKV: every arm reports the line number and nothing else — not the line, not the "key"', () => {
+  // The line that failed to parse is the one line no mask can cover: a file that
+  // did not parse contributes nothing to the attempt log's mask, and
+  // remote-deploy.conf's malformed line is the WEBHOOK_SECRET itself. These
+  // messages reach journald (through serve's startup), the operator's terminal,
+  // the attempt log and events.log.
+  //
+  // All three arms, because a wrapped paste lands in different ones depending on
+  // what the secret happens to contain. The `key` half of a split is not safer
+  // than the line: for an env file every line is a value, and base64 is the
+  // common encoding for one.
+  const cases = [
+    // no "=" at all: the whole line is the secret
+    { text: 'sk_live_TOPSECRETVALUE', keys: null, expect: 'line 1: expected KEY=value', secret: 'sk_live_TOPSECRETVALUE' },
+    { text: '  "private_key": "sk_live_TOPSECRETVALUE",', keys: null, expect: 'line 1: expected KEY=value', secret: 'sk_live_TOPSECRETVALUE' },
+    // split at a character KEY_RE rejects: base64's "/" and "+", or a padding "="
+    { text: 'sk-live/AKIAEXAMPLEsecretpart=tail', keys: null, expect: 'line 1: bad key', secret: 'AKIAEXAMPLEsecretpart' },
+    { text: 'aGVsbG8gd29ybGQ+c2VjcmV0=', keys: null, expect: 'line 1: bad key', secret: 'aGVsbG8gd29ybGQ' },
+    // a KEY_RE-legal base64url prefix, checked against a known-keys set: this is
+    // the arm parseMain uses, so it is reachable for WEBHOOK_SECRET
+    { text: 'aGVsbG8gd29ybGRzZWNyZXQ=', keys: MAIN_KEYS, expect: 'line 1: unknown key', secret: 'aGVsbG8gd29ybGRzZWNyZXQ' },
+  ];
+  for (const { text, keys, expect, secret } of cases) {
+    assert.throws(() => parseKV(text, keys), (e) => {
       assert.ok(e instanceof ConfigError);
-      assert.equal(e.message, 'line 1: expected KEY=value');
-      assert.ok(!e.message.includes(line.trim()), `the offending line must not be echoed: ${e.message}`);
+      assert.equal(e.message, expect, `unexpected message for ${JSON.stringify(text)}`);
+      assert.ok(!e.message.includes(secret), `no part of the line may be echoed: ${e.message}`);
       return true;
     });
   }

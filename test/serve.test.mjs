@@ -329,6 +329,32 @@ test('shutdown journals a queued-but-not-yet-started entry that gets dropped', a
   assert.ok(lines.some((l) => /\[r2\].*dropped at shutdown/.test(l)), 'the dropped entry is journaled, not silent');
 });
 
+test('close() waits for the in-flight attempt to finish writing, not merely until its bound exists', async () => {
+  // The drain's bound is a tunable, and a wrong value goes green unless
+  // something asserts what the wait is for. Nothing else in the suite exercises
+  // serve()'s close() with an attempt actually in flight: the "shutdown
+  // mid-build" test drives runEntry directly with its own AbortController.
+  //
+  // The property is not the elapsed time — abort() kills the build at once, so a
+  // healthy shutdown here is fast — but that close() does not return until the
+  // attempt has recorded its own outcome. A `finished` still null at this point
+  // is exactly what startup reads as "the service died inside that attempt".
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 3', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r' }), { ok: true, queued: true });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r');
+  await svc.close();
+  const s = await readState(p.repoDir('r'));
+  assert.ok(s.last, 'the attempt announced itself');
+  assert.ok(s.last.finished, 'close() returned only after the attempt wrote its outcome');
+  assert.equal(s.last.outcome, 'interrupted');
+  await assert.rejects(fs.stat(path.join(p.repoDir('r'), 'current')), 'a build killed by shutdown never flipped');
+});
+
 test('shutdown waits, bounded, for a still-running deferred ON_FAILURE notification, then leaves it running rather than cutting off its message', async () => {
   const p = await makePrefix();
   await writeMain(p);
