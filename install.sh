@@ -232,9 +232,21 @@ say "flipd.service is enabled and running"
 # forwarded -- and on a first install it is how an operator confirms that
 # GitHub's ping arrived at all. Not `output file`: the unit's sandbox refuses
 # writes under /var/log/caddy even when caddy owns the directory.
+# The filter drops X-Hub-Signature-256 from the logged request headers. It is
+# an HMAC of the body under WEBHOOK_SECRET, so it is inside the never-print
+# rule, and Caddy's default header redaction (Cookie, Authorization) does not
+# know it. Without the body the value is not replayable -- except for the
+# installer's own ping, whose body is a fixed literal -- but "not exploitable
+# today" is not the standard; "never logged" is.
 CADDY_BLOCK="${HOST:-deploy.example.com} {
     log {
         output stderr
+        format filter {
+            wrap json
+            fields {
+                request>headers>X-Hub-Signature-256 delete
+            }
+        }
     }
     handle /deploy {
         reverse_proxy 127.0.0.1:9000

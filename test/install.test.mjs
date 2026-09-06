@@ -228,7 +228,13 @@ test('install.sh: the Caddy site block logs every request to journald, not to a 
   // sees a request flipd never receives -- a TLS failure, a 404 on the wrong
   // path, a proxy misconfiguration. On the first real install, proving that
   // GitHub's ping had arrived took adding this by hand.
-  assert.match(block, /^\s+log \{\s*\n\s+output stderr\s*\n\s+\}/m, 'a log directive writing to stderr, which the unit sends to journald');
+  assert.match(block, /^\s+log \{/m, 'a log directive');
+  assert.match(block, /^\s+output stderr$/m, 'writing to stderr, which the unit sends to journald');
+  // The signature header is an HMAC under WEBHOOK_SECRET and so inside the
+  // never-print rule; Caddy's default redaction set does not include it.
+  assert.match(block, /^\s+request>headers>X-Hub-Signature-256 delete$/m, 'the signature header is filtered out of the logged request');
+  const deleteIndex = block.indexOf('X-Hub-Signature-256 delete');
+  assert.ok(deleteIndex > block.indexOf('log {') && deleteIndex < block.indexOf('handle /deploy'), 'the filter is inside the log block');
   // `output file /var/log/caddy/...` is refused by the Debian unit's sandbox
   // with "permission denied" even when caddy owns the directory; observed.
   assert.doesNotMatch(block, /output file/, 'never a file: the sandbox refuses it');

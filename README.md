@@ -28,12 +28,15 @@ upstream of flipd.
 `--host` needs a name that already points at the box; it installs Caddy, wires
 TLS, and checks the path with a signed ping. Without it, everything else
 happens and the Caddy block is printed to paste by hand.
-The block logs every request to the site — source IP, method, path, status —
-to journald, so `journalctl -u caddy` is where to look when a webhook seems
-not to arrive. The block lives at `/etc/caddy/conf.d/flipd.caddy` and is
-rewritten on each `--host` run, so hand edits there do not survive; and
-everything in `conf.d/` is imported, so a backup file left there defines the
-site twice and Caddy refuses the reload.
+
+With `--host`, the site block lives at `/etc/caddy/conf.d/flipd.caddy` and
+logs every request to this site — source IP, method, path, status, and the
+request headers with `X-Hub-Signature-256` filtered out — to journald, so
+`journalctl -u caddy` is where to look when a webhook seems not to arrive.
+The `log` directive is inside the site block, so it covers this site only,
+not others on the same Caddy. The block is rewritten on each `--host` run, so
+hand edits there do not survive; and everything in `conf.d/` is imported, so
+a backup file left there defines the site twice and Caddy refuses the reload.
 
 Partway through its output, the installer prints a
 `sudo usermod -aG flipd <you>` line — run it (and start a fresh login
