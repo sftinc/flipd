@@ -440,3 +440,64 @@ test('a forged newline in pusher or ssh_url cannot forge an events.log or journa
     await svc.close();
   }
 });
+
+test('the webhook events line carries the delivery id, cut to 40; a coalesced push says so in its reply', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'sleep 5', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const sign = (b) => 'sha256=' + createHmac('sha256', 'testsecret').update(b).digest('hex');
+    const post = (body, delivery) => fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sign(body), 'x-github-event': 'push', ...(delivery === undefined ? {} : { 'x-github-delivery': delivery }) } });
+    // r1 is running for the whole test, so every push to it is coalesced
+    // into the run-again flag and the reply has to say so.
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r1' }), { ok: true, queued: true });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+
+    const body = JSON.stringify({ ref: 'refs/heads/main', after: 'c'.repeat(40), pusher: { name: 'w' }, repository: { ssh_url: src.url } });
+    const first = await post(body, '72d3162e-cc78-11e3-81ab-4c9367dc0958');
+    assert.equal(first.status, 202);
+    assert.equal(await first.text(), 'queued r1 (running; will run again after)');
+    const second = await post(body, 'd'.repeat(200));
+    assert.equal(second.status, 202);
+    const third = await post(body);   // no header
+    assert.equal(third.status, 202);
+
+    const events = await fs.readFile(path.join(p.repoLog('r1'), 'events.log'), 'utf8');
+    assert.match(events, /webhook c{40} w  delivery=72d3162e-cc78-11e3-81ab-4c9367dc0958\n/);
+    assert.match(events, new RegExp(`webhook c{40} w  delivery=d{40}\\n`), 'a long id is cut to 40, not carried whole');
+    assert.match(events, /webhook c{40} w\n/, 'no header, no delivery= field');
+    assert.match(events, /queued webhook \(running; will run again after\)/);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('a push during shutdown is refused with 503, not answered 202 for work that was discarded', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  // The build ignores SIGTERM so the drain stays open for the whole sleep:
+  // that is the window in which the listener is still up and the queue is
+  // already stopped.
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'trap "" TERM; sleep 5', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: 'git@github.com:o/r2.git', BUILD: 'true', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r1' }), { ok: true, queued: true });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+  const closing = svc.close();   // queue.stop() has run by the time this returns
+  try {
+    const body = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/r2.git' } });
+    const sig = 'sha256=' + createHmac('sha256', 'testsecret').update(body).digest('hex');
+    const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sig, 'x-github-event': 'push' } });
+    assert.equal(res.status, 503);
+    assert.equal(await res.text(), 'refused r2 (stopping)');
+    assert.match(await fs.readFile(path.join(p.repoLog('r2'), 'events.log'), 'utf8'), /refused stopping\n/);
+  } finally {
+    await closing;
+  }
+});
