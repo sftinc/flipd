@@ -35,6 +35,10 @@ an env-file value — key names only. This binds journald, the attempt log,
 from env files are masked in attempt output (`MASK_MIN` in `lib/log.mjs`), and
 anything that came off the wire goes through `cleanForLog` (`lib/hook.mjs`) before
 it reaches a log — a newline in a payload field otherwise forges a log line.
+A URL that came from repo content rather than from `REPO` goes through
+`redactUserinfo` before it reaches the attempt log — `.gitmodules` is
+writable by anyone who can push, and `REPO`'s own refusal of userinfo does
+not cover it.
 
 **Never execute `install.sh`.** It runs as root: creates users, writes `/etc`,
 installs a systemd unit and Caddy. There is no undo. It is verified statically

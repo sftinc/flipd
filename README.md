@@ -255,6 +255,12 @@ Restarting drops anything mid-build: the in-flight command is killed, its
 attempt is logged as `interrupted`, and the in-memory queue is lost. Check
 that `flipd status` shows nothing running first.
 
+One behaviour change to know about when upgrading past this version: a
+checkout containing `.gitmodules` now initialises its submodules, so a repo
+that carries one its build never needed — a docs theme, a vendor directory —
+fails with `checkout failed` if the deploy key cannot read it. See the `KEY`
+row in [The repo file](#the-repo-file) for the machine-user key that fixes it.
+
 ## What flipd does not do
 
 - **Poll.** It reacts to pushes. `check`'s exit code is the hook for a

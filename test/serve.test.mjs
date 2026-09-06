@@ -492,9 +492,23 @@ test('a push during shutdown is refused with 503, not answered 202 for work that
   await writeMain(p);
   const src = await makeSourceRepo();
   await src.commit({ a: '1' });
-  // The build ignores SIGTERM so the drain stays open for the whole sleep:
-  // that is the window in which the listener is still up and the queue is
-  // already stopped.
+  // What this test needs is the window where the queue is stopped and the
+  // listener is still up. close() runs queue.stop() and abort.abort()
+  // synchronously before its first await, so `stopping` is guaranteed the
+  // moment svc.close() returns. The window's *width* is not what the shape
+  // of this test suggests: BUILD never runs. waitFor sees the queue's
+  // `running` slot, which kick() fills before awaiting the runner, so the
+  // abort lands while runEntry is still in clone/fetch, and killing that
+  // git child ends the drain in about 3ms -- not the 5s sleep, and nowhere
+  // near the 20s drain bound. The client wins by roughly a millisecond
+  // because a loopback connect needs fewer event-loop turns than
+  // kill -> SIGCHLD -> writeState -> appendEvent -> log.close(). Measured
+  // 89/89 clean, 64 of those under concurrent load. A loss would be a loud
+  // ECONNREFUSED, never a false pass: even a fast drain leaves stopped ===
+  // true, so the 503 assertion cannot pass for the wrong reason. Making the
+  // window genuinely wide (a marker file BUILD touches, then waitFor it)
+  // would cost the suite the full 10s graceMs on every run, for a race that
+  // did not reproduce in 89 tries.
   await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'trap "" TERM; sleep 5', DEPLOY: 'true' });
   await writeRepoConf(p, 'r2', { REPO: 'git@github.com:o/r2.git', BUILD: 'true', DEPLOY: 'true' });
   const lines = [];
