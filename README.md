@@ -52,6 +52,9 @@ below without `sudo`. See [Permissions](#permissions).
     sudo vi /etc/flipd/repos/app.conf        # BUILD and DEPLOY
     flipd check app
 
+Every key the file accepts is in [The repo file](#the-repo-file); worked
+`DEPLOY` commands are in [docs/deploy-recipes.md](docs/deploy-recipes.md).
+
 ## Every day
 
     flipd status
@@ -70,6 +73,107 @@ catches both a lost webhook and a deploy nobody noticed had failed. To tell
 those apart, use the exit code directly — see `check`'s row in
 [Commands](#commands): `0` up to date, `4` behind (or unconfirmed), `1` a
 failed row, `3` service down.
+
+## Where things live
+
+Every path is keyed by the repo's name, which `add` takes from the URL
+(`git@github.com:you/app.git` becomes `app`) unless `--name` says otherwise.
+For a repo named `app`:
+
+| Path | What |
+|---|---|
+| `/etc/flipd/flipd.conf` | the server file — see [The server file](#the-server-file) |
+| `/etc/flipd/repos/app.conf` | the repo file `add` writes — see [The repo file](#the-repo-file) |
+| `/etc/flipd/env/app.build`, `app.deploy` | extra environment for `BUILD` and `DEPLOY`, written by `flipd env` |
+| `/var/lib/flipd/app/key`, `key.pub` | the deploy key `add` generates |
+| `/var/lib/flipd/app/git/` | the bare clone, made on the first run, not by `add` |
+| `/var/lib/flipd/app/releases/<id>/` | one git worktree per build; `<id>` is the attempt's UTC timestamp plus the short sha |
+| `/var/lib/flipd/app/current` | a symlink to the release most recently flipped to, confirmed or not |
+| `/var/lib/flipd/app/state.json` | which release is live, previous and pending |
+| `/var/log/flipd/app/<id>.log` | one attempt log per build or rollback |
+| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months) |
+
+flipd writes nowhere else. Getting the release to wherever it is served from
+is `DEPLOY`'s job: see [docs/deploy-recipes.md](docs/deploy-recipes.md).
+`/var/lib/flipd/app` is mode `0750`, owned `flipd:flipd`, so nothing running
+as another user can read a release in place; the recipes take that into
+account.
+
+## The repo file
+
+`/etc/flipd/repos/<name>.conf` is `KEY=value` lines. Blank lines and `#`
+comments are ignored; an unknown key is an error. The file is re-read on
+every event, so an edit needs no restart. A file that fails to parse is
+logged to journald and skipped, and the other repos are unaffected. `REPO`,
+`BUILD` and `DEPLOY` are required; everything else has a default.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `REPO` | required | The URL to fetch. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git`, because a push is matched to a repo by comparing this value to the payload's `ssh_url` exactly. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
+| `BRANCH` | `main` | The branch to follow. A push to any other branch is answered `ignored`. |
+| `ROOT` | `.` | The directory inside the checkout that `BUILD` and `DEPLOY` run in. Relative, no `..`. It does not change where flipd puts files. |
+| `BUILD` | required | Run by `/bin/sh -c` in the fresh checkout. A non-zero exit is `build failed`: nothing is flipped and the live release is untouched. |
+| `DEPLOY` | required | Run after `current` is flipped to the new release. Exit `0` confirms the release; anything else is `deploy failed`. Run again on rollback. See [docs/deploy-recipes.md](docs/deploy-recipes.md). |
+| `ON_FAILURE` | none | Run after every outcome other than `ok` and `skipped`, capped at 60 seconds, in `/var/lib/flipd/<name>`, with `DEPLOY_OUTCOME` and `DEPLOY_LOG` added to the deploy environment. Its own exit code is one `events.log` line and changes nothing. |
+| `WATCH` | everything | Space-separated globs. A push whose changed files (since the live release) match none of them is `skipped`. |
+| `IGNORE` | none | Globs subtracted from `WATCH`: a changed file matching one does not count. |
+| `TIMEOUT` | `1200` | Seconds, applied to `BUILD` and to `DEPLOY` separately. A command still running at the limit is killed and the attempt fails. |
+| `KEY` | `/var/lib/flipd/<name>/key` | The private key for the fetch. `add --key` sets it, for a machine user's key shared across repos. |
+| `BUILD_ENV_FILE` | `/etc/flipd/env/<name>.build` | Where `BUILD`'s extra environment is read from. |
+| `DEPLOY_ENV_FILE` | `/etc/flipd/env/<name>.deploy` | The same for `DEPLOY` and `ON_FAILURE`. |
+| `HOOK_HOST` | written by `add` | The `PUBLIC_HOST` at the time `add` ran. `check` prints the webhook recipe with `PUBLIC_HOST` if it is set, otherwise this. |
+
+Globs: `*` matches anything except `/`, `**` anything including `/`, `**/`
+zero or more directories, `?` one character. A pattern must match the whole
+path from the repo root, so `src/**` covers the tree under `src` and `*.md`
+covers only top-level markdown. The filter runs only when there is a live
+release to diff against: `flipd run` bypasses it, so does an empty commit,
+and if the live sha can no longer be found in the clone (a force-push) flipd
+builds rather than guess.
+
+## What BUILD and DEPLOY see
+
+Both run as the `flipd` user under `/bin/sh -c`, in `releases/<id>/<ROOT>`,
+with their output going to the attempt log. The environment is built from
+scratch, not inherited from the service:
+
+| Variable | Value |
+|---|---|
+| `PATH` | `/usr/local/bin:/usr/bin:/bin` |
+| `HOME` | `/var/lib/flipd`, so npm's cache persists across builds |
+| `DEPLOY_NAME` | the repo's name |
+| `DEPLOY_REPO` | `REPO` |
+| `DEPLOY_BRANCH` | `BRANCH` |
+| `DEPLOY_SHA` | the commit being built, or on rollback, flipped to |
+| `DEPLOY_PREVIOUS_SHA` | the commit that was live when this attempt started, or empty |
+| `DEPLOY_RELEASE_DIR` | absolute path of `releases/<id>` |
+| `DEPLOY_RELEASE_ID` | the release id |
+| `DEPLOY_ATTEMPT_ID` | the attempt id, which names the log file |
+| `DEPLOY_OUTCOME` | `ON_FAILURE` only: `fetch failed`, `checkout failed`, `build failed`, `deploy failed` or `interrupted` |
+| `DEPLOY_LOG` | `ON_FAILURE` only: path of the attempt log |
+
+Then every line of the phase's env file, set with
+`sudo flipd env <name> build|deploy --set K=V`. flipd's own variables win: an
+env file cannot replace `PATH` or `HOME` or set any `DEPLOY_*` name, and a
+line that tries is one warning in the attempt log. Both env files are read
+once when the attempt opens, and every value of eight characters or more is
+masked wherever the attempt's output is written, so a secret a build prints
+does not reach a log.
+
+## The server file
+
+`/etc/flipd/flipd.conf` is written by the installer and read once, when the
+service starts, so an edit needs `sudo systemctl restart flipd`. Same syntax
+as a repo file.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `LISTEN` | `127.0.0.1:9000` | Where the webhook listener binds. Loopback with Caddy in front, unless you accept push payloads travelling in clear. |
+| `PUBLIC_HOST` | none | The name Caddy serves; set by `install.sh --host`. Used only to print the webhook recipe. |
+| `WEBHOOK_SECRET` | required | Generated by the installer; the same value goes in GitHub's webhook form. Never printed by flipd. |
+| `KEEP` | `5` | Release directories kept after each run, beyond live, previous and pending. Older ones are removed, failed builds included. |
+| `LOG_KEEP` | `50` | Attempt logs kept per repo, oldest deleted first. `events.log` is not counted. |
+| `LOG_MAX_BYTES` | `52428800` | Cap on one attempt log. A command that prints more has its output cut, not its run. |
 
 ## Permissions
 
