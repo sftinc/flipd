@@ -146,7 +146,7 @@ For a repo named `app`:
 | `/etc/flipd/flipd.conf` | the server file — see [The server file](#the-server-file) |
 | `/etc/flipd/repos/app.conf` | the repo file `add` writes — see [The repo file](#the-repo-file) |
 | `/etc/flipd/env/app.build`, `app.deploy` | extra environment for `BUILD` and `DEPLOY`, written by `flipd env` |
-| `/etc/flipd/accounts/<host>.conf` | an account, written by `flipd account add`; root-only, read by `add` and nothing else |
+| `/etc/flipd/accounts/<host>.conf` | an account, written by `flipd account add`; root-only, read by `add` and `account list`; the service never does |
 | `/var/lib/flipd/app/key`, `key.pub` | the deploy key `add` generates |
 | `/var/lib/flipd/app/git/` | the bare clone, made on the first run, not by `add` |
 | `/var/lib/flipd/app/releases/<id>/` | one git worktree per build; `<id>` is the attempt's UTC timestamp plus the short sha |
@@ -171,7 +171,7 @@ logged to journald and skipped, and the other repos are unaffected. `REPO`,
 
 | Key | Default | Meaning |
 |---|---|---|
-| `REPO` | required | The URL to fetch. A push is matched to a repo by comparing this value to the payload's `ssh_url` as host/owner/repo, so case, a `.git` suffix and the `git@host:` versus `ssh://git@host:port/` forms do not matter; a URL that is not of that shape (`file://`) is compared as a lowercased string. A repository renamed on its forge is matched by its numeric id once one webhook run has recorded it, on the same host only, and the attempt log says to update `REPO`. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git` (fetch needs the SSH form) and, with an account, writes the URL the forge itself renders. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
+| `REPO` | required | The URL to fetch. A push is matched to a repo by comparing this value to the payload's `ssh_url` as host/owner/repo, so case, a `.git` suffix and the `git@host:` versus `ssh://git@host:port/` forms do not matter; a URL that is not of that shape (`file://`) is compared as a lowercased string. A repository renamed on its forge is matched by its numeric id once one webhook run has recorded it, scoped to the same host when both hosts are known, and the attempt log says to update `REPO`. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git` (fetch needs the SSH form) and, with an account, writes the URL the forge itself renders. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
 | `BRANCH` | `main` | The branch to follow. A push to any other branch is answered `ignored`. |
 | `ROOT` | `.` | The directory inside the checkout that `BUILD` and `DEPLOY` run in. Relative, no `..`. It does not change where flipd puts files. |
 | `BUILD` | required | Run by `/bin/sh -c` in the fresh checkout. A non-zero exit is `build failed`: nothing is flipped and the live release is untouched. |
@@ -288,7 +288,7 @@ skimmed when it is not.
 | Command | Sudo / group needed | Exit codes |
 |---|---|---|
 | `flipd serve` | run by systemd as `flipd` | runs until `SIGTERM`/`SIGINT` |
-| `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem, or, with an account, the forge refused a call (nothing is left behind); `2` usage |
+| `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem, or, with an account, the forge refused a call (the uploaded deploy key and its local files are undone; a webhook this run already created is left in place on the forge and named in the output); `2` usage |
 | `flipd account add <host> --kind github\|forgejo\|gitea [--api URL] [--ssh-port N] < token-file` / `account list` / `account remove <host>` | sudo | `0` done; `1` bad host/kind/token, the account already exists or does not, or the host key could not be scanned; `2` usage |
 | `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the webhook recipe (Payload URL, secret location, `gh api` pipeline) with the current `PUBLIC_HOST`, so it can be read again after `--host` |
 | `flipd run <name>` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down |

@@ -15,7 +15,7 @@ everywhere.
 |---|---|
 | [`lib/`](lib/CLAUDE.md) | The service: hook listener, queue, the run controller, state, git, logging |
 | [`lib/cli/`](lib/cli/CLAUDE.md) | One file per subcommand, all talking to the service over a Unix socket |
-| `/etc/flipd/accounts/` | Accounts (`KIND`, `API`, `TOKEN`), one per host, `0600 root`. Only `add` reads them; the service never does. |
+| `/etc/flipd/accounts/` | Accounts (`KIND`, `API`, `TOKEN`), one per host, `0600 root`. Only `add` and `account list` read them; the service never does. |
 | [`test/`](test/CLAUDE.md) | `node:test`, real git repos and real sockets — no mocking framework |
 | `bin/flipd` | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here. |
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |

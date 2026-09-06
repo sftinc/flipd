@@ -26,8 +26,12 @@ The exceptions write config, not state: `add` (writes a repo conf, generates a
 deploy key), `env` (edits an env file), `remove` (deletes a conf), `account`
 (writes an account). `add` is also the one command that talks to a forge's
 API: when `/etc/flipd/accounts/<host>.conf` exists for the URL's host it uploads
-the key and creates the webhook itself (`lib/forge.mjs`), undoing its own forge
-writes if a later call fails; otherwise it prints the recipe as before.
+the key and creates the webhook itself (`lib/forge.mjs`). A later failure
+undoes the uploaded key and the local key files it generated, but leaves a
+webhook it created in place — named in the failure output — because a
+leftover hook has no secret to leak and the next `add` finds and reuses it by
+URL, while a re-uploaded key would be rejected as a duplicate; otherwise it
+prints the recipe as before.
 
 ## Testing without a service
 
