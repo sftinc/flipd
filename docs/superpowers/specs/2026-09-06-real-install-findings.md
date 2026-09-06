@@ -249,7 +249,7 @@ imported, so do not leave backups there.
 
 ---
 
-### [ ] 6 · Two post-verification sinks still take raw wire values
+### [x] 6 · Two post-verification sinks still take raw wire values
 
 **From:** the whole-branch review of the fixes for items 1–5, 2026-09-06.
 Not observed failing on the box; found by reading the code beside the change
@@ -276,7 +276,7 @@ before assuming.
 
 ---
 
-### [ ] 7 · The Caddy-filter test checks position, not nesting
+### [x] 7 · The Caddy-filter test checks position, not nesting
 
 **From:** the scoped re-review of the fix for item 5, 2026-09-06.
 
@@ -297,3 +297,12 @@ only automated guard on the generated Caddyfile. Do not weaken the other
 assertions in the same test while strengthening this one.
 
 **Size:** one helper in the test, no production change.
+
+**Done:** both in a661deb. Item 6 found a third sink the item had not named --
+the rename path journals *and* writes events.log, both taking the pushed
+ssh_url -- so all three were cleaned; cleaning one of a pair is the trap. The
+test asserts line integrity rather than the absence of the injected text,
+because a log that hides what was sent is worse than one that shows it
+neutralised. Item 7's spanOf() was checked against the sibling form it exists
+to catch: moving the filter out of the log block fails the new assertion and
+passed the old one.
