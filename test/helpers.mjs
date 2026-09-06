@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import http from 'node:http';
 import { paths } from '../lib/paths.mjs';
 
 const run = promisify(execFile);
@@ -88,4 +89,23 @@ export async function writeAccountConf(p, host, kv) {
   await fs.mkdir(p.accountsDir, { recursive: true });
   const text = Object.entries(kv).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
   await fs.writeFile(path.join(p.accountsDir, `${host}.conf`), text);
+}
+
+// A forge's API, scripted. Records every request so a test can assert what
+// was sent (auth header, body) and answers from `script`, which the test may
+// edit between calls to make a later step succeed or fail.
+export async function fakeForge(script) {
+  const seen = [];
+  const server = http.createServer(async (req, res) => {
+    let text = '';
+    for await (const c of req) text += c;
+    seen.push({ method: req.method, path: req.url, headers: req.headers, body: text ? JSON.parse(text) : null });
+    const [status, payload] = script[`${req.method} ${req.url}`] ?? [404, { message: 'Not Found' }];
+    const out = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(out) });
+    res.end(out);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address();
+  return { api: `http://127.0.0.1:${port}`, seen, close: () => new Promise((r) => server.close(r)) };
 }
