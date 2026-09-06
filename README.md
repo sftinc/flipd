@@ -153,7 +153,7 @@ For a repo named `app`:
 | `/var/lib/flipd/app/current` | a symlink to the release most recently flipped to, confirmed or not |
 | `/var/lib/flipd/app/state.json` | which release is live, previous and pending |
 | `/var/log/flipd/app/<id>.log` | one attempt log per build or rollback |
-| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries GitHub's delivery id, so a delivery that matched a repo can be found here with `grep` |
+| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries the delivery id, so a delivery that matched a repo can be found here with `grep` |
 
 flipd writes nowhere else. Getting the release to wherever it is served from
 is `DEPLOY`'s job: see [docs/deploy-recipes.md](docs/deploy-recipes.md).
@@ -243,8 +243,9 @@ as a repo file.
 
 ## Permissions
 
-`/etc/flipd` is root-owned, so **`add`, `env` and `remove` need
-`sudo`.**
+`/etc/flipd` is root-owned, so **`add`, `env`, `remove` and `account` need
+`sudo`** — the account conf is root-only because it holds a token that can
+create webhooks.
 
 `status`, `check`, `run`, `rollback` and `log` don't need `sudo`, but they do
 need your account in the `flipd` group (the install step above) — none

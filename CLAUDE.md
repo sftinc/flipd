@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-flipd turns a GitHub push into fetch → build → flip → deploy on a server you own.
+flipd turns a push into fetch → build → flip → deploy on a server you own.
 Single file per module, Node 20+, ESM, **zero npm dependencies** — keep it that way.
 
 ## Map
@@ -81,8 +81,10 @@ same repo can ever interleave:
 - **`lib/hook.mjs`** verifies the HMAC before parsing anything, then hands a
   matched repo to the queue. Everything after `verifySignature` journals.
 - **`lib/serve.mjs`** wires it together, reconciles state at startup, and matches a
-  push to a repo config by `ssh_url` — falling back to GitHub's numeric repo id so
-  a renamed repository still matches.
+  push to a repo config by identity — host, owner and repo, so case and the
+  scp-versus-`ssh://`-with-port spelling do not matter. A repository renamed on
+  its forge is matched by its numeric id instead, scoped to the same host when
+  both hosts are known.
 - **`lib/run.mjs`** is the controller and the file to read first. Phases are
   `fetch → checkout → build → flip → deploy`; a failure before `flip` leaves the
   live release untouched.
