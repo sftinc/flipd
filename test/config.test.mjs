@@ -5,7 +5,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { paths } from '../lib/paths.mjs';
-import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile } from '../lib/config.mjs';
+import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile, parseAccount, loadAccount } from '../lib/config.mjs';
+import { makePrefix, writeAccountConf } from './helpers.mjs';
 
 test('parseKV: trims, ignores blanks and comments, keeps everything after the first =', () => {
   const m = parseKV('  A = 1 \n\n# note\nB=x=y && $Z\n', null);
@@ -115,4 +116,33 @@ test('loadRepos: bad file is reported, good ones load', async () => {
 
 test('loadEnvFile: missing file is an empty map', async () => {
   assert.deepEqual([...(await loadEnvFile('/nonexistent/x.build'))], []);
+});
+
+test('parseAccount: kinds, API defaults, https only, TOKEN required — and no message echoes a value', () => {
+  assert.deepEqual(parseAccount('forge.example.com', 'KIND=forgejo\nTOKEN=abc\n'),
+    { host: 'forge.example.com', kind: 'forgejo', api: 'https://forge.example.com/api/v1', token: 'abc' });
+  assert.equal(parseAccount('github.com', 'KIND=github\nTOKEN=abc\n').api, 'https://api.github.com');
+  assert.equal(parseAccount('h.example', 'KIND=gitea\nAPI=https://h.example/api/v1/\nTOKEN=abc\n').api, 'https://h.example/api/v1', 'trailing slash trimmed');
+  const t = 'ghp_SECRETVALUE';
+  const bad = [
+    `KIND=gitlab\nTOKEN=${t}\n`,                     // unknown kind
+    'KIND=github\n',                                 // no token
+    `KIND=github\nAPI=http://h/api\nTOKEN=${t}\n`,   // token in clear
+    `KIND=github\nTOKEN=${t}\nEXTRA=1\n`,            // unknown key
+    `${t}\n`,                                        // a pasted token where a line should be
+    `TOKEN=${t}\n`,                                  // no kind
+  ];
+  for (const text of bad) {
+    assert.throws(() => parseAccount('h.example', text), (e) => e instanceof ConfigError && !e.message.includes(t) && !e.message.includes('gitlab'), text);
+  }
+});
+
+test('loadAccount: null when the file is absent, the parsed forge when present, a throw when present but bad', async () => {
+  const p = await makePrefix();
+  assert.equal(await loadAccount(p, 'forge.example.com'), null);
+  await writeAccountConf(p, 'forge.example.com', { KIND: 'forgejo', TOKEN: 'abc' });
+  assert.equal((await loadAccount(p, 'forge.example.com')).kind, 'forgejo');
+  await writeAccountConf(p, 'bad.example', { KIND: 'nope', TOKEN: 'abc' });
+  await assert.rejects(loadAccount(p, 'bad.example'), ConfigError);
+  await assert.rejects(loadAccount(p, '../etc'), (e) => e.code === 'EBADHOST');
 });

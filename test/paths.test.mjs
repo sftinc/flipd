@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { paths } from '../lib/paths.mjs';
+import { paths, HOST_RE } from '../lib/paths.mjs';
 
 test('paths derive from one prefix', () => {
   const p = paths('/tmp/x');
@@ -31,4 +31,15 @@ test('per-repo paths refuse a name that is not a plain repo name', () => {
     assert.throws(() => p.envFile(bad, 'build'), /repo name/);
   }
   assert.throws(() => p.envFile('a', 'other'), /build or deploy/);
+});
+
+test('account paths: accountConf refuses anything that is not a lowercase hostname', () => {
+  const p = paths('/x');
+  assert.equal(p.accountsDir, '/x/etc/flipd/accounts');
+  assert.equal(p.accountConf('forge.example.com'), '/x/etc/flipd/accounts/forge.example.com.conf');
+  assert.equal(p.accountConf('github.com'), '/x/etc/flipd/accounts/github.com.conf');
+  for (const bad of ['../flipd', 'a/b', 'Forge.Example.com', '', 'host.', '.host', '-h', 'a_b', 'a'.repeat(254), undefined]) {
+    assert.throws(() => p.accountConf(bad), (e) => e.code === 'EBADHOST', `"${bad}"`);
+  }
+  assert.ok(HOST_RE.test('a.b-c.d1'));
 });

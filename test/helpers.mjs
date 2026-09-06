@@ -83,3 +83,9 @@ export async function writeRepoConf(p, name, kv) {
   const text = Object.entries(kv).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
   await fs.writeFile(path.join(p.reposDir, `${name}.conf`), text);
 }
+
+export async function writeAccountConf(p, host, kv) {
+  await fs.mkdir(p.accountsDir, { recursive: true });
+  const text = Object.entries(kv).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+  await fs.writeFile(path.join(p.accountsDir, `${host}.conf`), text);
+}
