@@ -7,12 +7,12 @@ import path from 'node:path';
 import { emptyState, readState, writeState, StateError } from '../lib/state.mjs';
 
 test('missing state reads as empty', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
   assert.deepEqual(await readState(dir), emptyState());
 });
 
 test('round trip, and a stale tmp file is ignored', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
   const s = { ...emptyState(), live: 'r1', releases: { r1: { sha: 'a'.repeat(40), root: '.', deploy: 'x', built: 't' } } };
   await writeState(dir, s);
   await fs.writeFile(path.join(dir, 'state.json.tmp'), '{ broken');
@@ -28,7 +28,7 @@ test('a state.json that is not readable as state is a typed error, never a silen
   // delete it. `null` and `[]` matter as much as `{ truncated`, because they
   // parse fine and then spread into nothing at all.
   for (const text of ['{ truncated', 'null', '[]', '"nope"', '42']) {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
     await fs.writeFile(path.join(dir, 'state.json'), text);
     await assert.rejects(readState(dir), (e) => {
       assert.ok(e instanceof StateError, `${text} must be a StateError, not a bare parse error`);
@@ -39,7 +39,7 @@ test('a state.json that is not readable as state is a typed error, never a silen
 });
 
 test('concurrent writes all land, none fails on a shared temporary file, and none is left behind', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
   // With one fixed `state.json.tmp` these truncate each other: the loser's
   // rename finds nothing (ENOENT) or moves half-written bytes over the real
   // file. Promise.all surfaces the first such rejection.
@@ -52,7 +52,7 @@ test('concurrent writes all land, none fails on a shared temporary file, and non
 });
 
 test('a partial file on disk gains missing fields', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
   await fs.writeFile(path.join(dir, 'state.json'), '{"live":"r1"}');
   const s = await readState(dir);
   assert.equal(s.live, 'r1');

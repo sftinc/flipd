@@ -1,0 +1,10 @@
+# flipd.logrotate  ->  /etc/logrotate.d/flipd
+/var/log/flipd/*/events.log {
+    monthly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 flipd flipd
+}

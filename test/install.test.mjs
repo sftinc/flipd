@@ -27,10 +27,10 @@ test('install.sh parses under sh -n and its first real step is the root check', 
   assert.equal(secretLineIndex, -1, 'the HMAC script never reads the secret from argv');
   assert.match(text, /SECRET="\$SECRET"/, 'the secret reaches node through the environment');
   assert.match(text, /process\.env\.SECRET/, 'the HMAC script reads the secret from the environment');
-  // The unit's socket directory is root:remote-deploy only (by design, not a
+  // The unit's socket directory is root:flipd only (by design, not a
   // bug) -- an ordinary admin account needs group membership to use status,
   // check, run and rollback. The installer must say so as a named step.
-  assert.match(text, /usermod -aG remote-deploy/, 'installer prints the group-membership next step');
+  assert.match(text, /usermod -aG flipd/, 'installer prints the group-membership next step');
   // --host is interpolated into a Caddyfile block and a URL with no quoting
   // at all; it must be checked against a hostname shape before use. Anchored
   // on `case "$HOST" in`, which only the host-shape check can satisfy --
@@ -64,21 +64,21 @@ test('install.sh parses under sh -n and its first real step is the root check', 
   assert.ok(lcAllIndex >= 0 && lcAllIndex < hostCaseIndex && lcAllIndex < hereCaseIndex, 'LC_ALL is forced before either locale-sensitive case glob runs');
 });
 
-test('install.sh: an existing conf is always reconciled to root:remote-deploy 0640', async () => {
+test('install.sh: an existing conf is always reconciled to root:flipd 0640', async () => {
   const text = await fs.readFile('install.sh', 'utf8');
   const lines = text.split('\n');
   // Must be unconditional -- not indented inside the "file did not exist yet"
   // branch -- or an operator's hand-written conf (root:root 0600, as both the
   // README and `add`'s own output leave someone to create by hand) never gets
-  // fixed by a re-run, and the service (User=remote-deploy) gets EACCES and
+  // fixed by a re-run, and the service (User=flipd) gets EACCES and
   // crash-loops under Restart=on-failure forever.
-  const chownLine = lines.findIndex((l) => /^chown root:remote-deploy \/etc\/remote-deploy\/remote-deploy\.conf$/.test(l));
-  const chmodLine = lines.findIndex((l) => /^chmod 0640 \/etc\/remote-deploy\/remote-deploy\.conf$/.test(l));
+  const chownLine = lines.findIndex((l) => /^chown root:flipd \/etc\/flipd\/flipd\.conf$/.test(l));
+  const chmodLine = lines.findIndex((l) => /^chmod 0640 \/etc\/flipd\/flipd\.conf$/.test(l));
   assert.ok(chownLine >= 0, 'chown runs at top level, not nested inside the create-branch');
   assert.ok(chmodLine >= 0, 'chmod runs at top level, not nested inside the create-branch');
   // And it must run after both the create and the --host-rewrite branches, so
   // it applies regardless of which one ran (or neither).
-  const ifBranch = lines.findIndex((l) => /^if \[ ! -f \/etc\/remote-deploy\/remote-deploy\.conf \]; then$/.test(l));
+  const ifBranch = lines.findIndex((l) => /^if \[ ! -f \/etc\/flipd\/flipd\.conf \]; then$/.test(l));
   assert.ok(ifBranch >= 0 && ifBranch < chownLine && ifBranch < chmodLine);
 });
 
@@ -88,18 +88,18 @@ test('install.sh: the service is verified to still be running, not just successf
   // execs; a bad conf, EACCES, or a missing secret all crash within
   // milliseconds under Restart=on-failure, indistinguishable from a healthy
   // start unless something checks again after a settle.
-  assert.match(text, /systemctl is-active --quiet remote-deploy/, 'installer checks the service is actually active after (re)starting it');
+  assert.match(text, /systemctl is-active --quiet flipd/, 'installer checks the service is actually active after (re)starting it');
   // Anchored on the exact startup-liveness message, not a bare
-  // "journalctl -u remote-deploy" search: that string also appears in the
+  // "journalctl -u flipd" search: that string also appears in the
   // unrelated Caddy ping diagnostic later in the file, so a regression that
   // deleted the startup hint specifically (while leaving the Caddy one)
   // would otherwise still pass.
-  assert.match(text, /did not stay running; check: journalctl -u remote-deploy/, 'a failed startup names the log to check, specifically in the startup-liveness message');
+  assert.match(text, /did not stay running; check: journalctl -u flipd/, 'a failed startup names the log to check, specifically in the startup-liveness message');
   // Every run restarts, not just the first: `enable --now` is a no-op on an
   // already-enabled, already-running unit, so a re-run after `git pull` must
   // not leave old code running under a clean transcript.
-  assert.match(text, /^systemctl restart remote-deploy \|\| fail_started$/m, 'every run restarts the service, not just the first, and a failed restart itself is caught');
-  assert.match(text, /^systemctl is-active --quiet remote-deploy \|\| fail_started$/m, 'a restart that "succeeds" but does not stay up is caught by the same path');
+  assert.match(text, /^systemctl restart flipd \|\| fail_started$/m, 'every run restarts the service, not just the first, and a failed restart itself is caught');
+  assert.match(text, /^systemctl is-active --quiet flipd \|\| fail_started$/m, 'a restart that "succeeds" but does not stay up is caught by the same path');
 });
 
 test('install.sh: systemctl enable and restart failures are surfaced, not swallowed by set -e with no output', async () => {
@@ -109,8 +109,8 @@ test('install.sh: systemctl enable and restart failures are surfaced, not swallo
   // goes to stderr already (systemd's log_info(), not stdout), so there is
   // nothing to mute and no redirect belongs here; a failure must print our
   // own message before exiting, the way the liveness check does.
-  assert.doesNotMatch(text, /systemctl enable remote-deploy >\/dev\/null/, 'systemctl enable does not redirect a stream that was never carrying its progress chatter');
-  assert.match(text, /systemctl enable remote-deploy \|\| \{ echo/, 'a failed systemctl enable prints its own diagnostic and exits, rather than aborting silently under set -e');
+  assert.doesNotMatch(text, /systemctl enable flipd >\/dev\/null/, 'systemctl enable does not redirect a stream that was never carrying its progress chatter');
+  assert.match(text, /systemctl enable flipd \|\| \{ echo/, 'a failed systemctl enable prints its own diagnostic and exits, rather than aborting silently under set -e');
   // `restart` itself can fail outright (e.g. a broken ExecStart path) before
   // ever reaching the is-active settle-check below it; both failure paths
   // must land on the same journalctl hint.
@@ -119,8 +119,8 @@ test('install.sh: systemctl enable and restart failures are surfaced, not swallo
 
 test('install.sh: the installed unit points at this clone, wherever it lives, without a truncating write in the failure path', async () => {
   const text = await fs.readFile('install.sh', 'utf8');
-  assert.match(text, /"ExecStart=" ENVIRON\["HERE"\] "\/bin\/remote-deploy serve"/, 'installer substitutes $HERE into the unit when the clone is not at /opt/remote-deploy');
-  assert.match(text, /HERE" = \/opt\/remote-deploy/, 'installer only uses the shipped unit file verbatim when the clone actually is at /opt/remote-deploy');
+  assert.match(text, /"ExecStart=" ENVIRON\["HERE"\] "\/bin\/flipd serve"/, 'installer substitutes $HERE into the unit when the clone is not at /opt/flipd');
+  assert.match(text, /HERE" = \/opt\/flipd/, 'installer only uses the shipped unit file verbatim when the clone actually is at /opt/flipd');
   // Not sed: $HERE lands in a sed *replacement* string, where '&' and a
   // backslash are metacharacters -- '&' re-inserts the whole matched line
   // (mangling it) and a broken replacement script would abort mid-write.
@@ -129,12 +129,12 @@ test('install.sh: the installed unit points at this clone, wherever it lives, wi
   assert.doesNotMatch(text, /sed ["'][^"']*ExecStart/, 'ExecStart substitution does not go through sed');
   // The substituted unit must never be written via a truncating redirect
   // straight to the live path: a mid-write failure there would leave
-  // /etc/systemd/system/remote-deploy.service at zero bytes, with set -e
+  // /etc/systemd/system/flipd.service at zero bytes, with set -e
   // aborting before daemon-reload runs again -- reproduced on every later
   // run. It must be built in a temp file and moved into place with `install`.
-  assert.doesNotMatch(text, />\s*\/etc\/systemd\/system\/remote-deploy\.service/, 'the unit is never written by a direct redirect to the live path');
+  assert.doesNotMatch(text, />\s*\/etc\/systemd\/system\/flipd\.service/, 'the unit is never written by a direct redirect to the live path');
   assert.match(text, /UNIT_TMP/, 'the substituted unit is built in a temp file first');
-  assert.match(text, /install -m 0644 "\$UNIT_TMP" \/etc\/systemd\/system\/remote-deploy\.service/, 'the temp file is moved into place with install, not a redirect');
+  assert.match(text, /install -m 0644 "\$UNIT_TMP" \/etc\/systemd\/system\/flipd\.service/, 'the temp file is moved into place with install, not a redirect');
   // A plain `rm -f "$UNIT_TMP"` placed after the install line is never
   // reached if awk or install fails first, leaking the temp file. An EXIT
   // trap runs regardless of how (or whether) the rest of the script exits.
@@ -151,12 +151,12 @@ test('install.sh: the Caddy keyring step is skip-if-present, and the group hint 
   assert.match(text, /\[ ! -e \/usr\/share\/keyrings\/caddy-stable-archive-keyring\.gpg \]/, 'the keyring write is guarded by the keyring file\'s own existence');
   // The group-membership hint (and logrotate) must print before BOTH the
   // service-liveness gate and the Caddy section: either can abort under
-  // `set -e` for reasons unrelated to remote-deploy itself (a bad hand-written
+  // `set -e` for reasons unrelated to flipd itself (a bad hand-written
   // conf; a pre-existing Caddyfile with a syntax error failing `reload` and
   // `restart`), and an operator who never sees the hint has no way to tell a
   // permissions problem from a dead service the next time `status` reports one.
   const logrotateIndex = lines.findIndex((l) => /^# 7\. logrotate$/.test(l));
-  const usermodIndex = lines.findIndex((l) => /usermod -aG remote-deploy/.test(l));
+  const usermodIndex = lines.findIndex((l) => /usermod -aG flipd/.test(l));
   const serviceSectionIndex = lines.findIndex((l) => /^# 8\. service$/.test(l));
   const caddySectionIndex = lines.findIndex((l) => /^# 9\. Caddy$/.test(l));
   assert.ok(logrotateIndex >= 0 && serviceSectionIndex >= 0, 'both section markers exist');
@@ -171,7 +171,7 @@ test('install.sh: the Caddy keyring step is skip-if-present, and the group hint 
   // written, daemon-reload/enable/restart never run) rather than the
   // harmless post-service failure it used to be.
   const logrotateDirIndex = lines.findIndex((l) => /^install -d -m 0755 \/etc\/logrotate\.d$/.test(l));
-  const logrotateInstallIndex = lines.findIndex((l) => /^install -m 0644 "\$HERE\/remote-deploy\.logrotate" \/etc\/logrotate\.d\/remote-deploy$/.test(l));
+  const logrotateInstallIndex = lines.findIndex((l) => /^install -m 0644 "\$HERE\/flipd\.logrotate" \/etc\/logrotate\.d\/flipd$/.test(l));
   assert.ok(logrotateDirIndex >= 0 && logrotateInstallIndex >= 0 && logrotateDirIndex < logrotateInstallIndex, 'the logrotate.d directory is created before the config is installed into it');
 });
 
@@ -183,25 +183,25 @@ test('install.sh: refuses an empty GitHub host-key response, and makes the entry
   // lone newline satisfies `[ -s ... ]`), silently skipping this block on
   // every future run and wedging every git fetch on host key verification.
   assert.match(text, /\[ -n "\$KEYS" \]/, 'installer refuses to write known_hosts when GitHub returned no ssh_keys');
-  // systemd execs bin/remote-deploy directly; it must already be +x before
+  // systemd execs bin/flipd directly; it must already be +x before
   // the service starts, not only before the /usr/local/bin symlink is made --
-  // latent today because bin/remote-deploy is 100755 in git, but a checkout
+  // latent today because bin/flipd is 100755 in git, but a checkout
   // that lost the mode bit must not abort at the service step before ever
   // reaching a chmod that would have fixed it.
-  const chmodXIndex = lines.findIndex((l) => /chmod \+x "\$HERE\/bin\/remote-deploy"/.test(l));
+  const chmodXIndex = lines.findIndex((l) => /chmod \+x "\$HERE\/bin\/flipd"/.test(l));
   const serviceSectionIndex = lines.findIndex((l) => /^# 8\. service$/.test(l));
   assert.ok(chmodXIndex >= 0 && serviceSectionIndex >= 0 && chmodXIndex < serviceSectionIndex, 'the entry point is chmod +x before the service section starts it');
 });
 
 test('unit file and logrotate say what the spec says', async () => {
-  const unit = await fs.readFile('remote-deploy.service', 'utf8');
-  assert.match(unit, /^User=remote-deploy$/m);
-  assert.match(unit, /^ExecStart=\/opt\/remote-deploy\/bin\/remote-deploy serve$/m);
-  assert.match(unit, /^RuntimeDirectory=remote-deploy$/m);
+  const unit = await fs.readFile('flipd.service', 'utf8');
+  assert.match(unit, /^User=flipd$/m);
+  assert.match(unit, /^ExecStart=\/opt\/flipd\/bin\/flipd serve$/m);
+  assert.match(unit, /^RuntimeDirectory=flipd$/m);
   assert.match(unit, /^Restart=on-failure$/m);
   assert.match(unit, /^KillMode=mixed$/m);
-  const lr = await fs.readFile('remote-deploy.logrotate', 'utf8');
-  assert.match(lr, /\/var\/log\/remote-deploy\/\*\/events\.log/);
+  const lr = await fs.readFile('flipd.logrotate', 'utf8');
+  assert.match(lr, /\/var\/log\/flipd\/\*\/events\.log/);
   assert.match(lr, /monthly/);
   assert.match(lr, /rotate 12/);
 });

@@ -100,7 +100,7 @@ test('deploy failure: current flipped, live unchanged, pending set, webhook refu
   assert.equal(s.previous, null);
   assert.ok(s.pending && s.pending !== good);
   assert.equal(await t.current(), s.pending);
-  assert.match(await fs.readFile(s.last.log, 'utf8'), /remote-deploy rollback r/);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /flipd rollback r/);
 
   assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'refused');
   assert.match(await t.events(), /refused/);
@@ -232,7 +232,7 @@ test('shutdown mid-build is interrupted with current untouched; stale current.tm
 test('an env file cannot replace PATH or a DEPLOY_* variable', async () => {
   const t = await setup({ build: 'echo "$PATH|$DEPLOY_NAME|$MINE|$DEPLOY_FUTURE" > build.out' });
   // DEPLOY_FUTURE is the whole point of the prefix rule: the spec forbids an env
-  // file setting *any* name beginning DEPLOY_, "whether or not remote-deploy uses
+  // file setting *any* name beginning DEPLOY_, "whether or not flipd uses
   // it today", so that a variable added in a later version cannot be one an env
   // file has already been silently supplying. Object.hasOwn covers only the
   // eight names set today, so without the startsWith arm this line is the only
@@ -253,7 +253,7 @@ test('a malformed deploy env file after the flip is a deploy failure with the ro
   assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'deploy failed');
   const s = await t.state();
   assert.ok(s.pending);
-  assert.match(await fs.readFile(s.last.log, 'utf8'), /next: remote-deploy rollback r/);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /next: flipd rollback r/);
 });
 
 test('a confirmed deploy is final on disk the instant it is confirmed, not merely by the time runEntry returns', async () => {
@@ -523,7 +523,7 @@ test('a credential left in the clone\'s origin is redacted in every sink, not ju
   // A clone created before REPO refused credentials — or by hand — can still
   // hold a token in its stored origin. The REPO-changed refusal names that
   // origin, and that detail reaches the terminal, the attempt log, and
-  // events.log, the one log remote-deploy never prunes.
+  // events.log, the one log flipd never prunes.
   const gitDir = path.join(t.p.repoDir('r'), 'git');
   const gopts = { env: gitEnv({ key: '/nonexistent/key', knownHosts: t.p.knownHosts, home: t.p.lib }) };
   await setRemoteUrl(gitDir, 'https://x-access-token:ghp_TOPSECRETTOKEN@127.0.0.1:1/o/r.git', gopts);

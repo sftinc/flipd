@@ -1,0 +1,22 @@
+# flipd.service
+[Unit]
+Description=flipd: build-on-push for this box
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flipd
+Group=flipd
+ExecStart=/opt/flipd/bin/flipd serve
+WorkingDirectory=/var/lib/flipd
+RuntimeDirectory=flipd
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=3
+# SIGTERM goes to flipd only; it kills the build's process group itself and records "interrupted".
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

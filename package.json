@@ -1,10 +1,10 @@
 {
-  "name": "remote-deploy",
+  "name": "flipd",
   "version": "0.1.0",
   "description": "Build-on-push for a box you own",
   "type": "module",
   "private": true,
-  "bin": { "remote-deploy": "bin/remote-deploy" },
+  "bin": { "flipd": "bin/flipd" },
   "engines": { "node": ">=20" },
   "scripts": { "test": "node --test \"test/*.test.mjs\"" }
 }

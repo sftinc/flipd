@@ -70,8 +70,8 @@ deliberately.
 **From:** GitHub Actions `::add-mask::`, which replaces known secret values in log
 output rather than trusting the command not to print them.
 
-**Why:** the spec states deployd cannot stop a BUILD from echoing a secret, and then
-keeps fifty run logs per repo. deployd knows exactly the values it injected from the
+**Why:** the spec states flipd cannot stop a BUILD from echoing a secret, and then
+keeps fifty run logs per repo. flipd knows exactly the values it injected from the
 two env files, so the common accident is preventable: `set -x`, a stray `env`, a
 failing `curl` printing its `Authorization` header.
 
@@ -111,7 +111,7 @@ the package manager's download cache.
 small box this is minutes per deploy.
 
 **Change:** add `npm_config_cache` and `XDG_CACHE_HOME` to the BUILD environment table
-in section 4, pointing at `/var/lib/deployd/<name>/cache/`. Create the directory
+in section 4, pointing at `/var/lib/flipd/<name>/cache/`. Create the directory
 alongside `git/` and `releases/`. Step 7's prune must never treat it as a release
 candidate.
 
@@ -128,35 +128,35 @@ the place it has to be written down.
 ### [ ] 6 · `ON_FAILURE` command hook
 
 **From:** Deployer's Slack recipe, ArgoCD and Octopus notification subsystems, and
-GitHub Actions `failure()`. Every comparable tool has one; deployd has none.
+GitHub Actions `failure()`. Every comparable tool has one; flipd has none.
 
 **Why:** this matters more here than for them. After a failed DEPLOY, `pending` stays
 set and webhook runs are refused until someone intervenes. That is the right call, and
 it converts an unnoticed failure into an unnoticed and sticky one. Pushes then pile up
-doing nothing and the only signal is a capitalised word in `deployd status`.
+doing nothing and the only signal is a capitalised word in `flipd status`.
 
 **Change:** one config key, `ON_FAILURE`, run through `sh -c` with `DEPLOY_NAME`,
 `DEPLOY_SHA`, the outcome, and the log path in its environment. The operator writes
-their own `curl` or `mail` line, which keeps deployd out of the notification business.
+their own `curl` or `mail` line, which keeps flipd out of the notification business.
 
 **Decide:** whether it fires on every non-`ok` outcome or only on `deploy failed`. A
 skip is not a failure. A `fetch failed` from a deleted branch is noise once item 4
 lands, but a real fetch failure is worth knowing about.
 
-**Watch for:** it runs as the `deployd` user with the same small environment, and its
+**Watch for:** it runs as the `flipd` user with the same small environment, and its
 own failure must not change the attempt's recorded outcome.
 
 ---
 
-### [ ] 7 · Make `deployd check` exit non-zero when behind
+### [ ] 7 · Make `flipd check` exit non-zero when behind
 
 **From:** GitHub's documented redelivery flow, which lists deliveries for the past
-three days and can replay failed ones. deployd cannot use those endpoints without a
+three days and can replay failed ones. flipd cannot use those endpoints without a
 token, which contradicts the deploy-key-only decision, so this is the half that costs
 nothing.
 
 **Why:** the non-goals accept that a push arriving while the service is down is lost,
-and name `deployd check` as the habit that catches it. A habit is not a mechanism. An
+and name `flipd check` as the habit that catches it. A habit is not a mechanism. An
 exit code turns the same command into something cron or the box's health watch can
 use, with no new code in the service.
 
@@ -177,7 +177,7 @@ string.
 
 **Why:** a rename or transfer changes `ssh_url`. Git over SSH follows GitHub's
 redirect so fetches keep working, but the payload carries the new name and stops
-matching. deployd answers `200 ignored` and silently stops deploying.
+matching. flipd answers `200 ignored` and silently stops deploying.
 
 **Change:** match on `ssh_url` or on the `owner/repo` derived from `REPO` against
 `repository.full_name`. Separately, write every ignored push to journald with the
@@ -199,7 +199,7 @@ would skip it.
 **Change:** in step 2, skip the filter when the diff is empty. Consider the large
 changeset valve too.
 
-**Note:** deployd's filter is already better than the hosted tools, because it diffs
+**Note:** flipd's filter is already better than the hosted tools, because it diffs
 against the live sha rather than the previous build of the branch, so a watched change
 is never lost by being skipped once. Keep that. This is only the escape hatch.
 
@@ -212,7 +212,7 @@ is never lost by being skipped once. Keep that. This is only the escape hatch.
 **From:** adnanh/webhook's documentation, which states plainly that IP whitelist rules
 check the proxy's address rather than the client's.
 
-**Why:** deployd sits behind Caddy by default. If source-IP filtering is ever added,
+**Why:** flipd sits behind Caddy by default. If source-IP filtering is ever added,
 it must read `X-Forwarded-For` and trust it only from the proxy. Recording the trap now
 costs a sentence.
 
@@ -220,7 +220,7 @@ costs a sentence.
 
 **From:** Coolify, which posts pending then success or failure back to the commit.
 
-**Why:** deployd cannot, because it holds a deploy key and no API token, by an explicit
+**Why:** flipd cannot, because it holds a deploy key and no API token, by an explicit
 decision. That is fine and currently unstated, so it reads as an oversight. Add it to
 the non-goals with the reason, and point at item 6 as the substitute.
 
@@ -241,7 +241,7 @@ answer if it turns out to be needed; do not build it before there is a case.
 
 **Why:** a GitHub deploy key attaches to exactly one repository and a second attempt
 fails with "Key is already in use". The `KEY` row already says machine-user key and is
-correct. The decisions table says "an optional shared key", and `deployd add` always
+correct. The decisions table says "an optional shared key", and `flipd add` always
 prints `gh repo deploy-key add`, which walks the operator into that error.
 
 **Change:** make `add` detect a configured shared `KEY` and print the machine-user
@@ -263,7 +263,7 @@ are reproduced there with evidence. They belong ahead of everything above:
 ## Deliberately not stolen
 
 - adnanh/webhook's trigger-rule engine. Boolean composition over matchers is the best
-  idea in either project, and it is a general tool solving a general problem. deployd
+  idea in either project, and it is a general tool solving a general problem. flipd
   matches on signature, repository and branch, and that is the whole requirement.
   Revisit only if a real need appears, such as ignoring pushes from a bot.
 - Git-Auto-Deploy's `git fetch` plus `git reset --hard` update sequence. Correct for a
@@ -283,4 +283,4 @@ No action. Recorded so these do not get relitigated.
 - The serialised worker. adnanh/webhook dispatches a goroutine per request with no
   mutex, so a burst of pushes runs overlapping deploys.
 - The doorbell property. Both projects feed payload contents into the commands they
-  run. deployd takes the sha from its own fetch.
+  run. flipd takes the sha from its own fetch.

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// bin/remote-deploy
+// bin/flipd
 import { paths } from '../lib/paths.mjs';
 
 const COMMANDS = ['serve', 'add', 'check', 'run', 'rollback', 'status', 'log', 'env', 'remove'];
-const USAGE = `usage: remote-deploy <command> [args]
+const USAGE = `usage: flipd <command> [args]
 
   serve                              run the service (systemd does this)
   add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]

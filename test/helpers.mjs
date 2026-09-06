@@ -22,7 +22,7 @@ process.once('exit', () => {
   }
 });
 
-export async function tmpdir(label = 'remote-deploy', base = os.tmpdir()) {
+export async function tmpdir(label = 'flipd', base = os.tmpdir()) {
   const dir = await fs.mkdtemp(path.join(base, `${label}-`));
   createdRoots.push(dir);
   return dir;
@@ -31,7 +31,7 @@ export async function tmpdir(label = 'remote-deploy', base = os.tmpdir()) {
 // A Unix domain socket path is capped at roughly 104 bytes on macOS and 108
 // on Linux. os.tmpdir() alone can already spend most of that (macOS gives
 // each session a long, random /var/folders/.../T directory), leaving too
-// little room for etc/remote-deploy/... under it plus the socket's own
+// little room for etc/flipd/... under it plus the socket's own
 // name. Every test that starts a real socket server needs a workable path,
 // so root the prefix somewhere short instead of wherever the OS's tmp
 // convention happens to be. An explicit TMPDIR that is already short enough
@@ -48,7 +48,7 @@ function shortTmpBase() {
 }
 
 export async function makePrefix() {
-  const prefix = await tmpdir('remote-deploy-prefix', shortTmpBase());
+  const prefix = await tmpdir('flipd-prefix', shortTmpBase());
   const p = paths(prefix);
   for (const d of [p.reposDir, p.envDir, p.lib, p.log, path.dirname(p.sock), path.dirname(p.knownHosts)]) {
     await fs.mkdir(d, { recursive: true });
@@ -58,7 +58,7 @@ export async function makePrefix() {
 }
 
 export async function makeSourceRepo() {
-  const dir = await tmpdir('remote-deploy-src');
+  const dir = await tmpdir('flipd-src');
   const g = (...args) => run('git', ['-C', dir, ...args], { env: GIT_ENV });
   await run('git', ['init', '-q', '-b', 'main', dir], { env: GIT_ENV });
   async function commit(files, message = 'c') {

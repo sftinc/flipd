@@ -1,7 +1,7 @@
 #!/bin/sh
-# install.sh -- set up remote-deploy on this box. Idempotent: every step is skip-if-present.
+# install.sh -- set up flipd on this box. Idempotent: every step is skip-if-present.
 #
-#   sudo /opt/remote-deploy/install.sh [--host deploy.example.com]
+#   sudo /opt/flipd/install.sh [--host deploy.example.com]
 #
 # --host installs and wires Caddy for that name. The name must already resolve
 # to this box. Without --host, everything else happens and the Caddy block is
@@ -56,7 +56,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # narrower than that: now that the unit is built with awk's ENVIRON (which
 # passes bytes through unchanged) instead of a sed replacement string, '+',
 # '@', '~', ':' and ',' are all just bytes to it, so a clone at, say,
-# /srv/dev+ops/remote-deploy has no reason to be refused.
+# /srv/dev+ops/flipd has no reason to be refused.
 case "$HERE" in
   *[!A-Za-z0-9/_.+@~:,-]*) echo "install.sh: this clone's path ($HERE) has a character unsafe to embed in a systemd unit; move the clone to a path using only letters, digits, '/', '_', '.', '+', '@', '~', ':', ',', '-'" >&2; exit 1 ;;
 esac
@@ -70,20 +70,20 @@ NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
 command -v ssh-keygen >/dev/null || { echo "ssh-keygen is required: apt install openssh-client" >&2; exit 1; }
 
 # 2. user
-if ! id remote-deploy >/dev/null 2>&1; then
-  useradd --system --home-dir /var/lib/remote-deploy --shell /usr/sbin/nologin --user-group remote-deploy
-  say "created user remote-deploy"
+if ! id flipd >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/flipd --shell /usr/sbin/nologin --user-group flipd
+  say "created user flipd"
 fi
 
 # 3. trees
-install -d -m 0750 -o root -g remote-deploy /etc/remote-deploy /etc/remote-deploy/repos /etc/remote-deploy/env
-install -d -m 0750 -o remote-deploy -g remote-deploy /var/lib/remote-deploy /var/lib/remote-deploy/.ssh /var/log/remote-deploy
-say "created /etc/remote-deploy  /var/lib/remote-deploy  /var/log/remote-deploy"
+install -d -m 0750 -o root -g flipd /etc/flipd /etc/flipd/repos /etc/flipd/env
+install -d -m 0750 -o flipd -g flipd /var/lib/flipd /var/lib/flipd/.ssh /var/log/flipd
+say "created /etc/flipd  /var/lib/flipd  /var/log/flipd"
 
 # 4. main config
-if [ ! -f /etc/remote-deploy/remote-deploy.conf ]; then
+if [ ! -f /etc/flipd/flipd.conf ]; then
   SECRET=$(node -p 'require("crypto").randomBytes(32).toString("hex")')
-  ( umask 027; cat > /etc/remote-deploy/remote-deploy.conf <<EOF
+  ( umask 027; cat > /etc/flipd/flipd.conf <<EOF
 LISTEN=127.0.0.1:9000
 ${HOST:+PUBLIC_HOST=$HOST}
 WEBHOOK_SECRET=$SECRET
@@ -92,28 +92,28 @@ LOG_KEEP=50
 LOG_MAX_BYTES=52428800
 EOF
   )
-  sed -i '/^$/d' /etc/remote-deploy/remote-deploy.conf
-  say "wrote /etc/remote-deploy/remote-deploy.conf  (LISTEN=127.0.0.1:9000, new WEBHOOK_SECRET)"
+  sed -i '/^$/d' /etc/flipd/flipd.conf
+  say "wrote /etc/flipd/flipd.conf  (LISTEN=127.0.0.1:9000, new WEBHOOK_SECRET)"
 elif [ -n "$HOST" ]; then
-  if grep -q '^PUBLIC_HOST=' /etc/remote-deploy/remote-deploy.conf; then
-    sed -i "s|^PUBLIC_HOST=.*|PUBLIC_HOST=$HOST|" /etc/remote-deploy/remote-deploy.conf
+  if grep -q '^PUBLIC_HOST=' /etc/flipd/flipd.conf; then
+    sed -i "s|^PUBLIC_HOST=.*|PUBLIC_HOST=$HOST|" /etc/flipd/flipd.conf
   else
-    printf 'PUBLIC_HOST=%s\n' "$HOST" >> /etc/remote-deploy/remote-deploy.conf
+    printf 'PUBLIC_HOST=%s\n' "$HOST" >> /etc/flipd/flipd.conf
   fi
-  say "set PUBLIC_HOST=$HOST in /etc/remote-deploy/remote-deploy.conf"
+  say "set PUBLIC_HOST=$HOST in /etc/flipd/flipd.conf"
 fi
 # Unconditional, on every run, whether the file was just created, just edited
 # for --host, or untouched this time: an operator who hand-writes this file
 # before the first install (both the README and `add`'s own output point at
 # it) leaves it root:root 0600, and a run that only fixed ownership inside the
 # "just created" branch above would never repair that -- the service, which
-# runs as User=remote-deploy, would then get EACCES and crash-loop forever.
+# runs as User=flipd, would then get EACCES and crash-loop forever.
 # Same story if a previous run died between the heredoc and this chown/chmod.
-chown root:remote-deploy /etc/remote-deploy/remote-deploy.conf
-chmod 0640 /etc/remote-deploy/remote-deploy.conf
+chown root:flipd /etc/flipd/flipd.conf
+chmod 0640 /etc/flipd/flipd.conf
 
 # 5. GitHub host keys
-if [ ! -s /var/lib/remote-deploy/.ssh/known_hosts ]; then
+if [ ! -s /var/lib/flipd/.ssh/known_hosts ]; then
   KEYS=$(curl -fsS https://api.github.com/meta | node -e '
     let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
       const m=JSON.parse(s); for (const k of m.ssh_keys) console.log("github.com " + k); })') \
@@ -125,17 +125,17 @@ if [ ! -s /var/lib/remote-deploy/.ssh/known_hosts ]; then
   # every git fetch on host key verification with no way to retry short of
   # deleting the file by hand.
   [ -n "$KEYS" ] || { echo "api.github.com/meta returned no ssh_keys; refusing to write an empty known_hosts" >&2; exit 1; }
-  printf '%s\n' "$KEYS" > /var/lib/remote-deploy/.ssh/known_hosts
-  chown remote-deploy:remote-deploy /var/lib/remote-deploy/.ssh/known_hosts; chmod 0644 /var/lib/remote-deploy/.ssh/known_hosts
+  printf '%s\n' "$KEYS" > /var/lib/flipd/.ssh/known_hosts
+  chown flipd:flipd /var/lib/flipd/.ssh/known_hosts; chmod 0644 /var/lib/flipd/.ssh/known_hosts
   say "wrote known_hosts from api.github.com/meta"
 fi
 
 # 6. command (before the service starts: systemd execs this file directly,
 # so it must already be +x, and a checkout that lost the mode bit must not
 # leave the service unstarted only because this ran after it)
-ln -sfn "$HERE/bin/remote-deploy" /usr/local/bin/remote-deploy
-chmod +x "$HERE/bin/remote-deploy"
-say "linked /usr/local/bin/remote-deploy"
+ln -sfn "$HERE/bin/flipd" /usr/local/bin/flipd
+chmod +x "$HERE/bin/flipd"
+say "linked /usr/local/bin/flipd"
 
 # 7. logrotate
 # /etc/logrotate.d does not exist on every box (a slim container or a
@@ -147,15 +147,15 @@ say "linked /usr/local/bin/remote-deploy"
 # create the directory explicitly first, the same way the Caddy conf.d step
 # below does.
 install -d -m 0755 /etc/logrotate.d
-install -m 0644 "$HERE/remote-deploy.logrotate" /etc/logrotate.d/remote-deploy
+install -m 0644 "$HERE/flipd.logrotate" /etc/logrotate.d/flipd
 
-# The socket at /run/remote-deploy/remote-deploy.sock and /var/log/remote-deploy
-# are root:remote-deploy on purpose (that is the entire access control for
+# The socket at /run/flipd/flipd.sock and /var/log/flipd
+# are root:flipd on purpose (that is the entire access control for
 # run/rollback/check, and for log) -- so any admin account other than root
-# needs group membership to use remote-deploy without sudo. Printed here,
+# needs group membership to use flipd without sudo. Printed here,
 # before both the service-liveness gate and the Caddy section below -- either
 # can still abort under `set -e` for reasons that have nothing to do with
-# remote-deploy itself (a bad hand-written conf, or a pre-existing Caddyfile
+# flipd itself (a bad hand-written conf, or a pre-existing Caddyfile
 # with a syntax error failing both `reload` and `restart`) -- and an operator
 # who never sees this line has no way to tell a permissions problem from a
 # dead service the next time `status` says so.
@@ -163,18 +163,18 @@ ADMIN_USER="${SUDO_USER:-<your-user>}"
 cat <<EOF
 
 so your own login can run 'status', 'check', 'run', 'rollback' and 'log' without sudo:
-  sudo usermod -aG remote-deploy $ADMIN_USER
-this takes effect on your next login (or run 'newgrp remote-deploy' in the current shell).
+  sudo usermod -aG flipd $ADMIN_USER
+this takes effect on your next login (or run 'newgrp flipd' in the current shell).
 EOF
 
 # 8. service
-# The shipped unit hardcodes ExecStart=/opt/remote-deploy/bin/remote-deploy so the
+# The shipped unit hardcodes ExecStart=/opt/flipd/bin/flipd so the
 # static test's assertion means something concrete; a clone anywhere else must not
 # be a hard requirement with no safety value, so when $HERE differs, substitute the
 # real path into the installed copy instead and say so, out loud, every time it
 # happens -- the installed unit must never silently disagree with the file in the repo.
-if [ "$HERE" = /opt/remote-deploy ]; then
-  install -m 0644 "$HERE/remote-deploy.service" /etc/systemd/system/remote-deploy.service
+if [ "$HERE" = /opt/flipd ]; then
+  install -m 0644 "$HERE/flipd.service" /etc/systemd/system/flipd.service
 else
   # Not sed: $HERE lands in a sed *replacement* string, where '&' re-inserts
   # the whole matched line (silently mangling it, e.g. a clone at /opt/a&b)
@@ -191,11 +191,11 @@ else
   # secret in it, but still worth cleaning up). A trap runs on any exit.
   trap 'rm -f "$UNIT_TMP"' EXIT
   HERE="$HERE" awk '
-    /^ExecStart=/ { print "ExecStart=" ENVIRON["HERE"] "/bin/remote-deploy serve"; next }
+    /^ExecStart=/ { print "ExecStart=" ENVIRON["HERE"] "/bin/flipd serve"; next }
     { print }
-  ' "$HERE/remote-deploy.service" > "$UNIT_TMP"
-  install -m 0644 "$UNIT_TMP" /etc/systemd/system/remote-deploy.service
-  say "note: this clone is at $HERE, not /opt/remote-deploy; installed unit's ExecStart was rewritten to $HERE/bin/remote-deploy serve"
+  ' "$HERE/flipd.service" > "$UNIT_TMP"
+  install -m 0644 "$UNIT_TMP" /etc/systemd/system/flipd.service
+  say "note: this clone is at $HERE, not /opt/flipd; installed unit's ExecStart was rewritten to $HERE/bin/flipd serve"
 fi
 systemctl daemon-reload
 # systemctl's own progress line ("Created symlink ...") goes to stderr
@@ -203,9 +203,9 @@ systemctl daemon-reload
 # here and no redirect is needed: a masked unit, or a box where systemd is
 # not PID 1, must abort with systemctl's own diagnostic plus a line of our
 # own, not silently under `set -e` with every stream swallowed.
-systemctl enable remote-deploy || { echo "systemctl enable remote-deploy failed (see the systemctl output above); is systemd running as PID 1 on this box?" >&2; exit 1; }
+systemctl enable flipd || { echo "systemctl enable flipd failed (see the systemctl output above); is systemd running as PID 1 on this box?" >&2; exit 1; }
 fail_started() {
-  echo "remote-deploy.service did not stay running; check: journalctl -u remote-deploy" >&2
+  echo "flipd.service did not stay running; check: journalctl -u flipd" >&2
   exit 1
 }
 # Always (re)start, not just on first install: `enable` alone does not start a
@@ -217,10 +217,10 @@ fail_started() {
 # permissions mistake, or a missing secret can still exit within milliseconds
 # under Restart=on-failure/RestartSec=3 -- give it a moment to settle, then
 # check for real. Both failure paths land on the same message.
-systemctl restart remote-deploy || fail_started
+systemctl restart flipd || fail_started
 sleep 2
-systemctl is-active --quiet remote-deploy || fail_started
-say "remote-deploy.service is enabled and running"
+systemctl is-active --quiet flipd || fail_started
+say "flipd.service is enabled and running"
 
 # 9. Caddy
 CADDY_BLOCK="${HOST:-deploy.example.com} {
@@ -252,9 +252,9 @@ if [ -n "$HOST" ]; then
     fi
   fi
   install -d -m 0755 /etc/caddy/conf.d
-  printf '%s\n' "$CADDY_BLOCK" > /etc/caddy/conf.d/remote-deploy.caddy
-  chmod 0644 /etc/caddy/conf.d/remote-deploy.caddy   # root's umask may be 077; caddy runs as its own user
-  say "wrote /etc/caddy/conf.d/remote-deploy.caddy  for $HOST"
+  printf '%s\n' "$CADDY_BLOCK" > /etc/caddy/conf.d/flipd.caddy
+  chmod 0644 /etc/caddy/conf.d/flipd.caddy   # root's umask may be 077; caddy runs as its own user
+  say "wrote /etc/caddy/conf.d/flipd.caddy  for $HOST"
   if ! grep -qE '^\s*import\s+(/etc/caddy/)?conf\.d/\*' /etc/caddy/Caddyfile 2>/dev/null; then
     printf '\nimport /etc/caddy/conf.d/*\n' >> /etc/caddy/Caddyfile
     say 'added "import /etc/caddy/conf.d/*" to /etc/caddy/Caddyfile'
@@ -263,10 +263,10 @@ if [ -n "$HOST" ]; then
   systemctl reload caddy || systemctl restart caddy
   say "reloaded caddy"
   # Prove the path end to end: a ping signed with this box's secret gets "pong"
-  # from remote-deploy and nothing else. (Caddy stamps its own Server header on proxied
+  # from flipd and nothing else. (Caddy stamps its own Server header on proxied
   # responses too, so a bare 404 could never tell the two apart.)
   sleep 2
-  SECRET=$(sed -n 's/^WEBHOOK_SECRET=//p' /etc/remote-deploy/remote-deploy.conf)
+  SECRET=$(sed -n 's/^WEBHOOK_SECRET=//p' /etc/flipd/flipd.conf)
   BODY='{"zen":"install check"}'
   # SECRET reaches node through the environment, not argv: an argument would be
   # published for the life of this process in /proc/<pid>/cmdline, readable by
@@ -279,15 +279,15 @@ if [ -n "$HOST" ]; then
   if [ "$ANSWER" = "pong" ]; then
     say "POST https://$HOST/deploy (signed ping)  ->  pong   ok"
   else
-    say "POST https://$HOST/deploy (signed ping)  ->  '$ANSWER'   NOT OK: check DNS for $HOST, 'journalctl -u caddy', 'journalctl -u remote-deploy'"
+    say "POST https://$HOST/deploy (signed ping)  ->  '$ANSWER'   NOT OK: check DNS for $HOST, 'journalctl -u caddy', 'journalctl -u flipd'"
   fi
 fi
 
 cat <<EOF
 
 sudoers, for a DEPLOY command that needs root (one script, no password):
-  echo 'remote-deploy ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/remote-deploy
-  chmod 0440 /etc/sudoers.d/remote-deploy
+  echo 'flipd ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/flipd
+  chmod 0440 /etc/sudoers.d/flipd
 EOF
 if [ -z "$HOST" ]; then
   cat <<EOF
@@ -299,4 +299,4 @@ EOF
 fi
 
 say ""
-say "next: sudo remote-deploy add <git-url>"
+say "next: sudo flipd add <git-url>"

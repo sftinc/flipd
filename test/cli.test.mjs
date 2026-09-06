@@ -11,7 +11,7 @@ import { sendCommand } from '../lib/socket.mjs';
 import runCmd from '../lib/cli/run.mjs';
 import rollbackCmd from '../lib/cli/rollback.mjs';
 
-const BIN = fileURLToPath(new URL('../bin/remote-deploy', import.meta.url));
+const BIN = fileURLToPath(new URL('../bin/flipd', import.meta.url));
 
 async function waitFor(fn, ms = 10000) {
   const t0 = Date.now();
@@ -44,7 +44,7 @@ function captureIO() {
   };
 }
 
-test('remote-deploy run: exit 3 (service down) when the socket is unreachable', async () => {
+test('flipd run: exit 3 (service down) when the socket is unreachable', async () => {
   const p = await makePrefix();   // nothing is listening on p.sock
   const io = captureIO();
   const code = await runCmd(['whatever'], { paths: p, stdout: io.stdout, stderr: io.stderr });
@@ -52,7 +52,7 @@ test('remote-deploy run: exit 3 (service down) when the socket is unreachable', 
   assert.match(io.err(), /service down/);
 });
 
-test('remote-deploy rollback: exit 3 (service down) when the socket is unreachable', async () => {
+test('flipd rollback: exit 3 (service down) when the socket is unreachable', async () => {
   const p = await makePrefix();
   const io = captureIO();
   const code = await rollbackCmd(['whatever'], { paths: p, stdout: io.stdout, stderr: io.stderr });
@@ -60,7 +60,7 @@ test('remote-deploy rollback: exit 3 (service down) when the socket is unreachab
   assert.match(io.err(), /service down/);
 });
 
-test('remote-deploy run: exit 2 (usage) with no name', async () => {
+test('flipd run: exit 2 (usage) with no name', async () => {
   const p = await makePrefix();
   const io = captureIO();
   const code = await runCmd([], { paths: p, stdout: io.stdout, stderr: io.stderr });
@@ -68,7 +68,7 @@ test('remote-deploy run: exit 2 (usage) with no name', async () => {
   assert.match(io.err(), /usage/);
 });
 
-test('remote-deploy run and rollback: exit 1 when the reply is not ok, exit 0 when it is', async () => {
+test('flipd run and rollback: exit 1 when the reply is not ok, exit 0 when it is', async () => {
   const p = await makePrefix();
   await writeMain(p);
   const src = await makeSourceRepo();
@@ -111,11 +111,11 @@ test('remote-deploy run and rollback: exit 1 when the reply is not ok, exit 0 wh
   }
 });
 
-test('remote-deploy serve: starts, listens, and shuts down cleanly on SIGTERM', async () => {
+test('flipd serve: starts, listens, and shuts down cleanly on SIGTERM', async () => {
   const p = await makePrefix();
   await writeMain(p);
   const child = spawn(process.execPath, [BIN, 'serve'], {
-    env: { ...process.env, REMOTE_DEPLOY_PREFIX: p.prefix },
+    env: { ...process.env, FLIPD_PREFIX: p.prefix },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -138,11 +138,11 @@ test('remote-deploy serve: starts, listens, and shuts down cleanly on SIGTERM', 
   }
 });
 
-test('remote-deploy serve: a bad config exits with an error, not a hang', async () => {
+test('flipd serve: a bad config exits with an error, not a hang', async () => {
   const p = await makePrefix();
   // No main.conf at all: loadMain() throws ENOENT before anything listens.
   const child = spawn(process.execPath, [BIN, 'serve'], {
-    env: { ...process.env, REMOTE_DEPLOY_PREFIX: p.prefix },
+    env: { ...process.env, FLIPD_PREFIX: p.prefix },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

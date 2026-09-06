@@ -10,7 +10,7 @@ const opts = () => ({ env: gitEnv({ key: '/nonexistent/key', knownHosts: '/nonex
 test('clone, fetch, diff, worktree, ls-remote against a file:// repo', async () => {
   const src = await makeSourceRepo();
   const a = await src.commit({ 'README.md': 'a', 'mta/x.mjs': '1' });
-  const work = await tmpdir('remote-deploy-git');
+  const work = await tmpdir('flipd-git');
   const bare = path.join(work, 'git');
 
   assert.equal(await isBareRepo(bare), false);
@@ -40,7 +40,7 @@ test('clone, fetch, diff, worktree, ls-remote against a file:// repo', async () 
 test('fetch of a missing branch is a GitError with stderr', async () => {
   const src = await makeSourceRepo();
   await src.commit({ a: '1' });
-  const bare = path.join(await tmpdir('remote-deploy-git'), 'git');
+  const bare = path.join(await tmpdir('flipd-git'), 'git');
   await cloneBare(src.url, bare, opts());
   await assert.rejects(fetchBranch(bare, 'nope', opts()), (e) => e instanceof GitError && e.stderr.length > 0);
   assert.equal(await lsRemote(src.url, 'nope', opts()), null);
@@ -67,7 +67,7 @@ test('a timeout kills a git command and reports it', async () => {
 });
 
 test('a clone that fails leaves no bare directory behind', async () => {
-  const bare = path.join(await tmpdir('remote-deploy-git'), 'git');
+  const bare = path.join(await tmpdir('flipd-git'), 'git');
   await assert.rejects(cloneBare('file:///nonexistent/repo', bare, opts()));
   assert.equal(await isBareRepo(bare), false);
   await assert.rejects(fs.stat(bare));

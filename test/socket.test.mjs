@@ -7,7 +7,7 @@ import { tmpdir } from './helpers.mjs';
 import { createSocketServer, sendCommand } from '../lib/socket.mjs';
 
 async function newSockPath() {
-  return path.join(await tmpdir('remote-deploy-sock'), 'd.sock');
+  return path.join(await tmpdir('flipd-sock'), 'd.sock');
 }
 
 // Writes raw lines over a fresh connection and resolves with everything the

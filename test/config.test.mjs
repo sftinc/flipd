@@ -20,7 +20,7 @@ test('parseKV: unknown key and malformed line name the line', () => {
 test('parseKV: every arm reports the line number and nothing else — not the line, not the "key"', () => {
   // The line that failed to parse is the one line no mask can cover: a file that
   // did not parse contributes nothing to the attempt log's mask, and
-  // remote-deploy.conf's malformed line is the WEBHOOK_SECRET itself. These
+  // flipd.conf's malformed line is the WEBHOOK_SECRET itself. These
   // messages reach journald (through serve's startup), the operator's terminal,
   // the attempt log and events.log.
   //
@@ -89,8 +89,8 @@ test('parseRepo: defaults, required keys, name and ROOT rules', () => {
   assert.equal(r.root, '.');
   assert.deepEqual(r.watch, ['mta/**', 'packages/**']);
   assert.deepEqual(r.ignore, []);
-  assert.equal(r.buildEnvFile, '/x/etc/remote-deploy/env/alias.build');
-  assert.equal(r.key, '/x/var/lib/remote-deploy/alias/key');
+  assert.equal(r.buildEnvFile, '/x/etc/flipd/env/alias.build');
+  assert.equal(r.key, '/x/var/lib/flipd/alias/key');
   assert.equal(r.timeout, 1200);
   assert.equal(r.onFailure, null);
   assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nON_FAILURE=curl x', p).onFailure, 'curl x');
@@ -101,7 +101,7 @@ test('parseRepo: defaults, required keys, name and ROOT rules', () => {
 });
 
 test('loadRepos: bad file is reported, good ones load', async () => {
-  const prefix = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-'));
+  const prefix = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-'));
   const p = paths(prefix);
   await fs.mkdir(p.reposDir, { recursive: true });
   await fs.writeFile(path.join(p.reposDir, 'good.conf'), 'REPO=a\nBUILD=b\nDEPLOY=c\n');

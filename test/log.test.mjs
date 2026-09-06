@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { attemptIdFor, openAttemptLog, appendEvent, pruneLogs, latestLog, makeScrubber } from '../lib/log.mjs';
 
-const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-log-'));
+const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'flipd-log-'));
 const fixed = () => new Date('2026-09-05T08:14:02.345Z');
 
 test('attempt id is the UTC second with dashes', () => {

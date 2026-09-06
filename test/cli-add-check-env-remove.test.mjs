@@ -45,7 +45,7 @@ test('add writes the config with placeholders, generates a key, prints the next 
   assert.ok(o.out().includes(pub.trim()));
   assert.match(o.out(), /gh repo deploy-key add .*-R o\/r/);
   assert.match(o.out(), /https:\/\/deploy\.example\.com\/deploy/);
-  assert.match(o.out(), /remote-deploy check r/);
+  assert.match(o.out(), /flipd check r/);
   assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
   // The webhook-creation recipe must never carry WEBHOOK_SECRET as a command's
   // argv token (readable by any local user via `ps`/`/proc/<pid>/cmdline` for
@@ -98,7 +98,7 @@ test('add --key writes KEY, generates nothing, and prints the collaborator instr
   await writeMain(p);
   const shared = path.join(p.etc, 'machine.key');
   await fs.writeFile(shared, 'k');
-  await fs.writeFile(`${shared}.pub`, 'ssh-ed25519 AAAAmachine remote-deploy-machine');
+  await fs.writeFile(`${shared}.pub`, 'ssh-ed25519 AAAAmachine flipd-machine');
   const o = io();
   assert.equal(await add(['git@github.com:o/s.git', '--key', shared], { paths: p, ...o }), 0);
   const text = await fs.readFile(p.repoConf('s'), 'utf8');
@@ -169,7 +169,7 @@ test('remove: refuses while queued or running, otherwise deletes the config and 
   assert.match(ok.out(), new RegExp(`rm -rf ${p.repoLog('r')}`));
   assert.equal(await remove(['zzz'], { paths: p, ...io(), statusOverride: async () => ({ ok: true, running: null, queued: [] }) }), 1);
   await fs.writeFile(p.mainConf, 'WEBHOOK_SECRET=s\n');
-  await assert.rejects(remove(['../remote-deploy'], { paths: p, ...io(), statusOverride: async () => ({ ok: true, running: null, queued: [] }) }), /repo name/);
+  await assert.rejects(remove(['../flipd'], { paths: p, ...io(), statusOverride: async () => ({ ok: true, running: null, queued: [] }) }), /repo name/);
   await fs.stat(p.mainConf);
 });
 
@@ -339,7 +339,7 @@ test('concurrent env --set calls each complete: none fails on a temporary file a
   const file = p.envFile('r', 'build');
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, 'BASE=1\n');
-  // Two `sudo remote-deploy env` calls at once is a thing an operator can do.
+  // Two `sudo flipd env` calls at once is a thing an operator can do.
   // With one fixed `<file>.tmp` between them, the loser's chmod or rename hits
   // ENOENT — the same shape as writeState's race. Which --set wins is not
   // decided here (this does not make the command transactional); what is
