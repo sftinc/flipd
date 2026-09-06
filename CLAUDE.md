@@ -18,7 +18,9 @@ everywhere.
 | [`test/`](test/CLAUDE.md) | `node:test`, real git repos and real sockets — no mocking framework |
 | `bin/flipd` | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here. |
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
-| `docs/` | `deploy-recipes.md` and `superpowers/` (specs and plans; git-ignored subdirs) |
+| `docs/` | Documentation for a reader: instructions, help, recipes. Tracked. Nothing scratch goes here. |
+| `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
+| `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
 
 ## Commands
 
@@ -55,6 +57,14 @@ from anywhere lets any client claim GitHub's address. There is no such
 check today — the HMAC is the authentication — and adding one means
 deciding who maintains the allowed ranges, which is the part that does
 not have a good answer.
+
+**`docs/` is for readers; scratch lives elsewhere.** Superpowers defaults its
+output to `docs/superpowers/`; here that is overridden. Specs go to
+`.superpowers/specs/YYYY-MM-DD-<topic>-design.md`, plans to
+`.superpowers/plans/YYYY-MM-DD-<feature-name>.md`, and the SDD workspace stays
+under `.superpowers/sdd/`. Parked work goes in `todo/`. Only `docs/` is
+tracked, so anything written into the other two is invisible to a clone —
+which is the point: they are working state, not the record.
 
 ## Architecture
 
