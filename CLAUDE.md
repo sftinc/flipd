@@ -15,6 +15,7 @@ everywhere.
 |---|---|
 | [`lib/`](lib/CLAUDE.md) | The service: hook listener, queue, the run controller, state, git, logging |
 | [`lib/cli/`](lib/cli/CLAUDE.md) | One file per subcommand, all talking to the service over a Unix socket |
+| `/etc/flipd/accounts/` | Accounts (`KIND`, `API`, `TOKEN`), one per host, `0600 root`. Only `add` reads them; the service never does. |
 | [`test/`](test/CLAUDE.md) | `node:test`, real git repos and real sockets — no mocking framework |
 | `bin/flipd` | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here. |
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
@@ -31,12 +32,13 @@ everywhere.
 
 ## Rules that override convenience
 
-**Never print a secret.** flipd never prints `WEBHOOK_SECRET`, a private key, or
-an env-file value — key names only. This binds journald, the attempt log,
-`events.log`, stdout, and generated help text equally. Values of 8+ characters
-from env files are masked in attempt output (`MASK_MIN` in `lib/log.mjs`), and
-anything that came off the wire goes through `cleanForLog` (`lib/hook.mjs`) before
-it reaches a log — a newline in a payload field otherwise forges a log line.
+**Never print a secret.** flipd never prints `WEBHOOK_SECRET`, a forge
+`TOKEN`, a private key, or an env-file value — key names only. This binds
+journald, the attempt log, `events.log`, stdout, and generated help text
+equally. Values of 8+ characters from env files are masked in attempt output
+(`MASK_MIN` in `lib/log.mjs`), and anything that came off the wire goes
+through `cleanForLog` (`lib/hook.mjs`) before it reaches a log — a newline in
+a payload field otherwise forges a log line.
 A URL that came from repo content rather than from `REPO` goes through
 `redactUserinfo` before it reaches the attempt log — `.gitmodules` is
 writable by anyone who can push, and `REPO`'s own refusal of userinfo does

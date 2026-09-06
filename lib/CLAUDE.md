@@ -23,6 +23,8 @@ the never-print rule and the zero-dependency rule bind every file here.
 | `queue.mjs` | `createQueue(runner, {onError})` — serialises work, survives a throwing runner. |
 | `state.mjs` | `readState`/`writeState` per repo, `StateError`, `emptyState`. Writes via a uniquely-named temp file then rename. |
 | `config.mjs` | Parses both config files. `MAIN_KEYS`/`REPO_KEYS` gate what is accepted; an unknown key is an error. |
+| `repourl.mjs` | `parseRepoUrl(url)` → `{host, owner, repo, name}` or null; `repoIdentity(url)` — the host/owner/repo string `findRepoFor` matches on. |
+| `forge.mjs` | `createForge({kind, api, token})` — five calls against GitHub or the Gitea family over global `fetch`; `ForgeError`. Used by `cli/add.mjs` only. |
 | `paths.mjs` | Every path derives from here. `checkName()` is the only guard against `../` in a repo name — never build a repo path by hand. |
 | `git.mjs` | Thin wrappers. `gitOk` throws `GitError`; `redactUserinfo` strips credentials from messages. |
 | `exec.mjs` | `runCommand` for BUILD/DEPLOY, `groupKiller` for SIGTERM-then-SIGKILL of the whole process group. |
@@ -44,6 +46,10 @@ the never-print rule and the zero-dependency rule bind every file here.
   which is a failed delivery, not a judged one.
 - **`run.mjs` is 450 lines.** It is one sequence with one failure model; splitting
   it by phase would spread the state machine across files. Leave it whole.
+- **The hook reads `x-github-event` and `x-hub-signature-256` for every forge.**
+  Forgejo, Gitea and Gogs send those GitHub names beside their own, with the
+  same `sha256=` prefix. Renaming them to `X-Forgejo-*` would break GitHub and
+  gain nothing.
 
 ## Adding a phase or changing the order
 

@@ -45,6 +45,18 @@ below without `sudo`. See [Permissions](#permissions).
 
 ## Add a repo
 
+With an account for the host (see [Accounts](#accounts)), one command does
+the whole setup:
+
+    sudo flipd add https://forge.example.com/team/app --root .
+    sudo vi /etc/flipd/repos/app.conf        # BUILD and DEPLOY
+    flipd check app
+
+`add` generates a read-only deploy key and uploads it, creates the push
+webhook with the right URL and secret, and writes `REPO` exactly as the forge
+renders it. Without an account for that host, `add` prints the two steps
+for you to do instead:
+
     sudo flipd add git@github.com:you/app.git --root .
     # paste the deploy key and the webhook it prints (or run the deploy-key
     # command and the webhook pipeline it prints). If you set --host after
@@ -54,6 +66,46 @@ below without `sudo`. See [Permissions](#permissions).
 
 Every key the file accepts is in [The repo file](#the-repo-file); worked
 `DEPLOY` commands are in [docs/deploy-recipes.md](docs/deploy-recipes.md).
+
+## Accounts
+
+An account lets `add` configure GitHub, Forgejo or Gitea for you. It is
+one access token per host, used only while `add` runs, stored root-only in
+`/etc/flipd/accounts/<host>.conf`. The service never reads it, and repos already
+added keep working if it is revoked. Save the token in a file with your
+editor (not with `echo`, which puts it in your shell history), then:
+
+    sudo flipd account add forge.example.com --kind forgejo < token-file
+    sudo flipd account add github.com --kind github < github-token-file
+    rm token-file github-token-file
+    flipd account list                          # host, kind, api, token: set
+
+The token is read from stdin and nowhere else, so it never appears in `ps` or
+in shell history. What it needs:
+
+| Forge | Token | Permissions |
+|---|---|---|
+| GitHub | fine-grained personal access token, repository access limited to the repos flipd will add | *Metadata: read*, *Administration: write* (deploy keys live there), *Webhooks: write* |
+| Forgejo, Gitea | access token (Settings > Applications) of a user who administers those repos | `write:repository` |
+
+*Administration: write* is broad, which is why the token is used once, stored
+root-only, and worth revoking after the last `add`; nothing already set up
+depends on it. Forgejo and Gitea tokens are user-wide, so use a machine user
+where you can.
+
+For a Forgejo or Gitea host, `account add` also records the host's SSH key in
+`/var/lib/flipd/.ssh/known_hosts` and prints its fingerprints. Compare them
+with the ones the forge publishes before adding a repo. If SSH is not on
+port 22 there, pass `--ssh-port`; the key is recorded under `[host]:port`,
+which is how the `ssh://` URLs such a forge renders look it up. The API base
+defaults to `https://api.github.com` for GitHub and `https://<host>/api/v1`
+otherwise; `--api` overrides it and must be `https://`.
+
+`flipd account remove <host>` deletes the account. Repos on that host go back
+to the manual `add` flow; nothing already added changes.
+
+Forgejo's **Test delivery** button sends a real push for the repository's
+head, not a ping, so pressing it starts a build.
 
 ## Every day
 
@@ -94,6 +146,7 @@ For a repo named `app`:
 | `/etc/flipd/flipd.conf` | the server file — see [The server file](#the-server-file) |
 | `/etc/flipd/repos/app.conf` | the repo file `add` writes — see [The repo file](#the-repo-file) |
 | `/etc/flipd/env/app.build`, `app.deploy` | extra environment for `BUILD` and `DEPLOY`, written by `flipd env` |
+| `/etc/flipd/accounts/<host>.conf` | an account, written by `flipd account add`; root-only, read by `add` and nothing else |
 | `/var/lib/flipd/app/key`, `key.pub` | the deploy key `add` generates |
 | `/var/lib/flipd/app/git/` | the bare clone, made on the first run, not by `add` |
 | `/var/lib/flipd/app/releases/<id>/` | one git worktree per build; `<id>` is the attempt's UTC timestamp plus the short sha |
@@ -118,7 +171,7 @@ logged to journald and skipped, and the other repos are unaffected. `REPO`,
 
 | Key | Default | Meaning |
 |---|---|---|
-| `REPO` | required | The URL to fetch. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git`, because a push is matched to a repo by comparing this value to the payload's `ssh_url`, case-insensitively. A repository renamed on GitHub is matched by its numeric id once one webhook run has recorded it, and `events.log` says to update `REPO`. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
+| `REPO` | required | The URL to fetch. A push is matched to a repo by comparing this value to the payload's `ssh_url` as host/owner/repo, so case, a `.git` suffix and the `git@host:` versus `ssh://git@host:port/` forms do not matter; a URL that is not of that shape (`file://`) is compared as a lowercased string. A repository renamed on its forge is matched by its numeric id once one webhook run has recorded it, on the same host only, and the attempt log says to update `REPO`. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git` (fetch needs the SSH form) and, with an account, writes the URL the forge itself renders. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
 | `BRANCH` | `main` | The branch to follow. A push to any other branch is answered `ignored`. |
 | `ROOT` | `.` | The directory inside the checkout that `BUILD` and `DEPLOY` run in. Relative, no `..`. It does not change where flipd puts files. |
 | `BUILD` | required | Run by `/bin/sh -c` in the fresh checkout. A non-zero exit is `build failed`: nothing is flipped and the live release is untouched. |
@@ -234,7 +287,8 @@ skimmed when it is not.
 | Command | Sudo / group needed | Exit codes |
 |---|---|---|
 | `flipd serve` | run by systemd as `flipd` | runs until `SIGTERM`/`SIGINT` |
-| `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem; `2` usage |
+| `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem, or, with an account, the forge refused a call (nothing is left behind); `2` usage |
+| `flipd account add <host> --kind github\|forgejo\|gitea [--api URL] [--ssh-port N] < token-file` / `account list` / `account remove <host>` | sudo | `0` done; `1` bad host/kind/token, the account already exists or does not, or the host key could not be scanned; `2` usage |
 | `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the webhook recipe (Payload URL, secret location, `gh api` pipeline) with the current `PUBLIC_HOST`, so it can be read again after `--host` |
 | `flipd run <name>` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down |
 | `flipd rollback <name>` | group (or sudo) | same as `run`, printing `queued rollback of <name> to <sha>` or `not queued: <reason>` |

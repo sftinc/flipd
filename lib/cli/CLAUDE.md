@@ -23,13 +23,19 @@ a deploy key or touch a clone without racing a build. `check.mjs` here prints ro
 `../check.mjs` computes them.
 
 The exceptions write config, not state: `add` (writes a repo conf, generates a
-deploy key), `env` (edits an env file), `remove` (deletes a conf).
+deploy key), `env` (edits an env file), `remove` (deletes a conf), `account`
+(writes an account). `add` is also the one command that talks to a forge's
+API: when `/etc/flipd/accounts/<host>.conf` exists for the URL's host it uploads
+the key and creates the webhook itself (`lib/forge.mjs`), undoing its own forge
+writes if a later call fails; otherwise it prints the recipe as before.
 
 ## Testing without a service
 
 Every socket-using command takes an override parameter — `sendOverride`,
 `statusOverride` — so tests supply a canned reply instead of standing up a
 service. Keep that hook when adding a command; it is why the CLI tests are fast.
+`add` takes `forgeOverride` and `account` takes `keyscanOverride` for the same
+reason.
 
 ## Exit codes are an interface
 
