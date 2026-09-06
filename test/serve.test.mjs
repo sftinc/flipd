@@ -508,11 +508,15 @@ test('the webhook events line carries the delivery id, cut to 40; a coalesced pu
     assert.equal(second.status, 202);
     const third = await post(body);   // no header
     assert.equal(third.status, 202);
+    // No pusher: the field's separator must go with it, not leave a third space.
+    const nobody = JSON.stringify({ ref: 'refs/heads/main', after: 'e'.repeat(40), repository: { ssh_url: src.url } });
+    assert.equal((await post(nobody, 'aaaaaaaa-0000-0000-0000-000000000000')).status, 202);
 
     const events = await fs.readFile(path.join(p.repoLog('r1'), 'events.log'), 'utf8');
     assert.match(events, /webhook c{40} w  delivery=72d3162e-cc78-11e3-81ab-4c9367dc0958\n/);
     assert.match(events, new RegExp(`webhook c{40} w  delivery=d{40}\\n`), 'a long id is cut to 40, not carried whole');
     assert.match(events, /webhook c{40} w\n/, 'no header, no delivery= field');
+    assert.match(events, /webhook e{40}  delivery=aaaaaaaa-0000-0000-0000-000000000000\n/, 'no pusher: sha, two spaces, the id');
     assert.match(events, /queued webhook \(running; will run again after\)/);
   } finally {
     await svc.close();
