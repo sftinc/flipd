@@ -11,6 +11,17 @@ and is read from history:
 
 ## Install (once per server)
 
+The box needs `git`, `node` 20 or newer, `ssh-keygen` and `curl`. The first
+three are checked up front, and the installer stops cleanly if one is missing.
+`curl` is also required, but is not checked beforehand; it is used partway
+through (GitHub's host keys, Caddy repo setup, and the signed ping), so a box
+without it gets a partial install and a raw shell `command not found` rather
+than a clean refusal. On Debian and Ubuntu, `apt install nodejs` does **not**
+include `npm` — that is a separate package, needed only if your `BUILD` command
+uses it (`apt install npm`). A `BUILD=npm test` on a box with `node` but no
+`npm` fails with exit 127 and `npm: not found` in the attempt log; the fix is
+upstream of flipd.
+
     git clone git@github.com:sftinc/flipd.git /opt/flipd
     sudo /opt/flipd/install.sh --host deploy.example.com
 
