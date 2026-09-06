@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { makePrefix, tmpdir, writeMain, writeRepoConf } from './helpers.mjs';
+import { makePrefix, tmpdir, writeMain, writeRepoConf, fakeForge, writeAccountConf } from './helpers.mjs';
 import { parseKV, loadEnvFile } from '../lib/config.mjs';
 import add from '../lib/cli/add.mjs';
 import check from '../lib/cli/check.mjs';
@@ -10,6 +11,7 @@ import env from '../lib/cli/env.mjs';
 import remove from '../lib/cli/remove.mjs';
 import { findRepoFor } from '../lib/serve.mjs';
 import { parseRepoUrl } from '../lib/repourl.mjs';
+import { createForge } from '../lib/forge.mjs';
 
 function io() {
   let out = '', err = '';
@@ -379,4 +381,155 @@ test('env: --set and --unset on the same key in one call is refused as ambiguous
   assert.equal(await env(['r', 'build', '--unset', 'TOK', '--set', 'TOK=1'], { paths: p, ...bad }), 2);
   assert.match(bad.err(), /TOK/);
   await assert.rejects(fs.stat(p.envFile('r', 'build')), 'the ambiguous call is refused before the env file is even created');
+});
+
+async function accountSetup(script, accountKv = { KIND: 'forgejo', TOKEN: 'tokVALUE' }) {
+  const p = await makePrefix();
+  await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
+  await writeAccountConf(p, 'forge.example.com', accountKv);
+  const f = await fakeForge(script);
+  // The conf's API is https://forge.example.com/api/v1, which does not exist;
+  // the override keeps the real client and points it at the fake.
+  const forgeOverride = (c) => createForge({ ...c, api: f.api });
+  return { p, f, forgeOverride };
+}
+const noSecrets = (o) => assert.ok(!o.out().includes('testsecret') && !o.out().includes('tokVALUE') && !o.err().includes('testsecret') && !o.err().includes('tokVALUE'), 'neither the secret nor the token is ever printed');
+
+test('add with an account: looks the repo up, uploads the key, creates the webhook, writes REPO as the forge renders it', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/Team/App': [200, { id: 12, ssh_url: 'ssh://git@forge.example.com:2222/Team/App.git' }],
+    'GET /repos/Team/App/hooks': [200, []],
+    'POST /repos/Team/App/keys': [201, { id: 5 }],
+    'POST /repos/Team/App/hooks': [201, { id: 9 }],
+  });
+  try {
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/Team/App', '--root', 'web'], { paths: p, ...o, forgeOverride }), 0);
+    const text = await fs.readFile(p.repoConf('app'), 'utf8');
+    const kv = parseKV(text.replace(/^#BUILD=/m, 'BUILD=').replace(/^#DEPLOY=/m, 'DEPLOY='), null);
+    assert.equal(kv.get('REPO'), 'ssh://git@forge.example.com:2222/Team/App.git', 'the URL the forge will put in every push, port included');
+    assert.equal(kv.get('ROOT'), 'web');
+    assert.equal(kv.get('HOOK_HOST'), 'deploy.example.com');
+    assert.equal((await fs.stat(path.join(p.repoDir('app'), 'key'))).mode & 0o777, 0o600);
+    const pub = (await fs.readFile(path.join(p.repoDir('app'), 'key.pub'), 'utf8')).trim();
+    const keyReq = f.seen.find((r) => r.method === 'POST' && r.path === '/repos/Team/App/keys');
+    assert.deepEqual(keyReq.body, { title: `flipd@${os.hostname()}`, key: pub, read_only: true });
+    assert.equal(keyReq.headers.authorization, 'token tokVALUE');
+    const hookReq = f.seen.find((r) => r.method === 'POST' && r.path === '/repos/Team/App/hooks');
+    assert.deepEqual(hookReq.body, { type: 'forgejo', active: true, events: ['push'], config: { url: 'https://deploy.example.com/deploy', content_type: 'json', secret: 'testsecret' } });
+    assert.deepEqual(f.seen.map((r) => `${r.method} ${r.path}`), ['GET /repos/Team/App', 'GET /repos/Team/App/hooks', 'POST /repos/Team/App/keys', 'POST /repos/Team/App/hooks'], 'read-only calls first, writes last');
+    assert.match(o.out(), /deploy key added\s+flipd@\S+ \(id 5, read-only\)/);
+    assert.match(o.out(), /webhook added\s+https:\/\/deploy\.example\.com\/deploy \(id 9, push only\)/);
+    assert.match(o.out(), /flipd check app/);
+    assert.ok(!o.out().includes('gh api') && !o.out().includes(pub), 'no recipe and no key dump on the automated path');
+    noSecrets(o);
+    assert.equal(await add(['https://forge.example.com/Team/App'], { paths: p, ...io(), forgeOverride }), 1, 'refuses twice, as always');
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account: a 404 or a rejected token creates nothing; a missing PUBLIC_HOST refuses before any request', async () => {
+  const script = {};
+  const { p, f, forgeOverride } = await accountSetup(script);
+  try {
+    const nothing = async () => {
+      await assert.rejects(fs.stat(p.repoConf('app')));
+      await assert.rejects(fs.stat(p.repoDir('app')));
+    };
+    const o404 = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o404, forgeOverride }), 1);
+    assert.match(o404.err(), /not found on forge\.example\.com, or the token cannot see it/);
+    await nothing();
+    script['GET /repos/team/app'] = [401, { message: 'token expired' }];
+    const o401 = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o401, forgeOverride }), 1);
+    assert.match(o401.err(), /token rejected by forge\.example\.com/);
+    await nothing();
+    noSecrets(o401);
+    await writeMain(p);   // no PUBLIC_HOST
+    f.seen.length = 0;
+    const oHost = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...oHost, forgeOverride }), 1);
+    assert.match(oHost.err(), /PUBLIC_HOST is not set/);
+    assert.equal(f.seen.length, 0, 'refused before the first request');
+    await nothing();
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account: a failed webhook call deletes the uploaded key and the generated pair, so a retry is clean', async () => {
+  const script = {
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, []],
+    'POST /repos/team/app/keys': [201, { id: 5 }],
+    'POST /repos/team/app/hooks': [500, { message: 'boom' }],
+    'DELETE /repos/team/app/keys/5': [204, ''],
+  };
+  const { p, f, forgeOverride } = await accountSetup(script);
+  try {
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
+    assert.match(o.err(), /500 boom/);
+    assert.match(o.err(), /nothing was written/);
+    assert.ok(f.seen.some((r) => r.method === 'DELETE' && r.path === '/repos/team/app/keys/5'), 'the uploaded key is deleted again');
+    await assert.rejects(fs.stat(p.repoConf('app')));
+    await assert.rejects(fs.stat(p.repoDir('app')), 'the directory this run created is gone with its key pair');
+    // The forge cannot delete the key: the output says what to delete by hand.
+    script['DELETE /repos/team/app/keys/5'] = [403, { message: 'nope' }];
+    const o2 = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o2, forgeOverride }), 1);
+    assert.match(o2.err(), /delete the deploy key "flipd@\S+" \(id 5\)/);
+    // Fix the cause: the retry succeeds from scratch.
+    script['POST /repos/team/app/hooks'] = [201, { id: 9 }];
+    const o3 = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o3, forgeOverride }), 0);
+    await fs.stat(p.repoConf('app'));
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account: an existing webhook with the same URL is left alone, and --key uploads no deploy key', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, [{ id: 3, config: { url: 'https://deploy.example.com/deploy' } }, { id: 4, config: { url: 'https://elsewhere/deploy' } }]],
+  });
+  try {
+    const shared = path.join(p.etc, 'machine.key');
+    await fs.writeFile(shared, 'k');
+    await fs.writeFile(`${shared}.pub`, 'ssh-ed25519 AAAAmachine flipd-machine');
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app', '--key', shared], { paths: p, ...o, forgeOverride }), 0);
+    assert.ok(!f.seen.some((r) => r.method === 'POST'), 'no key upload, no hook creation');
+    assert.match(await fs.readFile(p.repoConf('app'), 'utf8'), new RegExp(`^KEY=${shared}$`, 'm'));
+    await assert.rejects(fs.stat(path.join(p.repoDir('app'), 'key')));
+    assert.match(o.out(), /webhook present\s+https:\/\/deploy\.example\.com\/deploy \(id 3\)/);
+    assert.match(o.out(), /refused 401/);
+    assert.match(o.out(), /collaborator/);
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add: an account conf that exists but cannot be parsed stops add loudly instead of falling back to the manual path', async () => {
+  const p = await makePrefix();
+  await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
+  await writeAccountConf(p, 'forge.example.com', { KIND: 'nope', TOKEN: 'tokVALUE' });
+  const o = io();
+  assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o }), 1);
+  assert.match(o.err(), new RegExp(p.accountConf('forge.example.com').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(o.err(), /KIND must be/);
+  await assert.rejects(fs.stat(p.repoConf('app')));
+  await assert.rejects(fs.stat(p.repoDir('app')));
+  noSecrets(o);
+  // No account conf at all: the manual path, exactly as before.
+  await fs.rm(p.accountConf('forge.example.com'));
+  const m = io();
+  assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...m }), 0);
+  assert.match(await fs.readFile(p.repoConf('app'), 'utf8'), /^REPO=https:\/\/forge\.example\.com\/team\/app$/m, 'a non-GitHub URL is written verbatim on the manual path');
+  assert.match(m.out(), /^2\. add the webhook/m);
 });
