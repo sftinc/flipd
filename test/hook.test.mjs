@@ -58,7 +58,7 @@ test('routes: 404 elsewhere, 401 unsigned, ping, push match, push no match, bad 
 
     const push = JSON.stringify({ ref: 'refs/heads/main', after: 'a'.repeat(40), pusher: { name: 'w' }, repository: { ssh_url: 'git@github.com:o/r.git', id: 42 } });
     assert.deepEqual(await h.post(push, { 'x-hub-signature-256': h.sign('s', push), 'x-github-event': 'push' }), { status: 202, text: 'queued r' });
-    assert.deepEqual(pushes, [['r', { sha: 'a'.repeat(40), pusher: 'w', sshUrl: 'git@github.com:o/r.git', id: 42 }]]);
+    assert.deepEqual(pushes, [['r', { sha: 'a'.repeat(40), pusher: 'w', sshUrl: 'git@github.com:o/r.git', id: 42, delivery: '' }]]);
 
     const other = JSON.stringify({ ref: 'refs/heads/dev', repository: { ssh_url: 'git@github.com:o/r.git' } });
     assert.deepEqual(await h.post(other, { 'x-hub-signature-256': h.sign('s', other), 'x-github-event': 'push' }), { status: 200, text: 'ignored' });
@@ -99,6 +99,22 @@ test('routes: 404 elsewhere, 401 unsigned, ping, push match, push no match, bad 
     const marker = 'ZZMARKERZZ-not-valid-json{';
     assert.equal((await h.post(marker, { 'x-hub-signature-256': h.sign('s', marker), 'x-github-event': 'push' })).status, 400);
     assert.ok(!lines.some((l) => l.includes('ZZMARKERZZ')), 'the body is never quoted in the journal');
+  } finally {
+    await h.close();
+  }
+});
+
+test('the delivery id reaches onPush raw, and is empty when the header is absent', async () => {
+  const seen = [];
+  const h = await listen({ secret: 's', findRepo: async () => repos[0], onPush: async (repo, info) => { seen.push(info.delivery); return { status: 202, body: 'queued r' }; }, journal: () => {} });
+  try {
+    const push = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/r.git' } });
+    const headers = (extra) => ({ 'x-hub-signature-256': h.sign('s', push), 'x-github-event': 'push', ...extra });
+    await h.post(push, headers({ 'x-github-delivery': '72d3162e-cc78-11e3-81ab-4c9367dc0958' }));
+    await h.post(push, headers({}));
+    // A newline cannot be sent: fetch refuses it and llhttp refuses to parse it.
+    // cleanForLog is unit-tested for that above; the sink (serve.mjs) cleans.
+    assert.deepEqual(seen, ['72d3162e-cc78-11e3-81ab-4c9367dc0958', '']);
   } finally {
     await h.close();
   }
