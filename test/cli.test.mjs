@@ -98,7 +98,8 @@ test('remote-deploy run and rollback: exit 1 when the reply is not ok, exit 0 wh
     // gives it one, made by the service itself: this test must not write
     // state.json behind a live service, which is a second writer of a file the
     // worker owns and was a real source of interference here.
-    assert.equal(await runCmd(['r'], { paths: p, stdout: captureIO().stdout, stderr: captureIO().stderr }), 0);
+    const ioRun2 = captureIO();
+    assert.equal(await runCmd(['r'], { paths: p, stdout: ioRun2.stdout, stderr: ioRun2.stderr }), 0);
     await waitIdle(p);
     const state = await readState(p.repoDir('r'));
     assert.ok(state.previous && state.live !== state.previous, 'two forced runs leave a previous to roll back to');
