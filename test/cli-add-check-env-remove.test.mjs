@@ -314,6 +314,25 @@ test('env --set on a duplicated key replaces the first line, deletes every later
   assert.equal(kv.get('NPM_TOKEN'), 'rotated_new');
 });
 
+test('concurrent env --set calls each complete: none fails on a temporary file another one owns', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  const file = p.envFile('r', 'build');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, 'BASE=1\n');
+  // Two `sudo remote-deploy env` calls at once is a thing an operator can do.
+  // With one fixed `<file>.tmp` between them, the loser's chmod or rename hits
+  // ENOENT — the same shape as writeState's race. Which --set wins is not
+  // decided here (this does not make the command transactional); what is
+  // decided is that no call blows up and no temporary file is left behind
+  // holding env-file values at 0640.
+  const codes = await Promise.all(Array.from({ length: 12 }, (_, i) => env(['r', 'build', '--set', `K${i}=v${i}`], { paths: p, ...io() })));
+  assert.deepEqual([...new Set(codes)], [0], `every concurrent call succeeded: ${codes}`);
+  const kv = await loadEnvFile(file);
+  assert.ok(kv.size >= 1, 'the file still parses');
+  assert.deepEqual((await fs.readdir(p.envDir)).filter((n) => n.includes('.tmp')), [], 'no temporary file is left behind');
+});
+
 test('env: --set and --unset on the same key in one call is refused as ambiguous, not silently order-dependent', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });

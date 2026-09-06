@@ -5,8 +5,9 @@ import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { makePrefix, makeSourceRepo, writeMain, writeRepoConf } from './helpers.mjs';
-import { readState, writeState } from '../lib/state.mjs';
+import { readState } from '../lib/state.mjs';
 import { serve } from '../lib/serve.mjs';
+import { sendCommand } from '../lib/socket.mjs';
 import runCmd from '../lib/cli/run.mjs';
 import rollbackCmd from '../lib/cli/rollback.mjs';
 
@@ -19,6 +20,17 @@ async function waitFor(fn, ms = 10000) {
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error('timed out waiting');
+}
+
+// Asks the worker whether it is done, rather than watching state.json for a
+// field to change: `live` is written at step 6, several steps before runEntry
+// returns, so a state.json poll can hand the test back control while the
+// service is still writing that same attempt's state.
+async function waitIdle(p) {
+  await waitFor(async () => {
+    const st = await sendCommand(p.sock, { cmd: 'status' });
+    return st.ok && st.running === null && st.queued.length === 0;
+  });
 }
 
 function captureIO() {
@@ -79,13 +91,17 @@ test('remote-deploy run and rollback: exit 1 when the reply is not ok, exit 0 wh
     assert.equal(await runCmd(['r'], { paths: p, stdout: ioRun.stdout, stderr: ioRun.stderr }), 0);
     assert.match(ioRun.out(), /queued r/);
 
-    await waitFor(async () => (await readState(p.repoDir('r'))).live !== null);
+    await waitIdle(p);
 
     // exit 0: rollback now has something to roll back to... but a single
-    // successful run has no `previous` yet (live only). Force one by writing
-    // state directly, then roll back through the real CLI/socket path.
+    // successful run has no `previous` yet (live only). A second forced run
+    // gives it one, made by the service itself: this test must not write
+    // state.json behind a live service, which is a second writer of a file the
+    // worker owns and was a real source of interference here.
+    assert.equal(await runCmd(['r'], { paths: p, stdout: captureIO().stdout, stderr: captureIO().stderr }), 0);
+    await waitIdle(p);
     const state = await readState(p.repoDir('r'));
-    await writeState(p.repoDir('r'), { ...state, previous: state.live });
+    assert.ok(state.previous && state.live !== state.previous, 'two forced runs leave a previous to roll back to');
     const ioRollback = captureIO();
     assert.equal(await rollbackCmd(['r'], { paths: p, stdout: ioRollback.stdout, stderr: ioRollback.stderr }), 0);
     assert.match(ioRollback.out(), /queued rollback of r to/);

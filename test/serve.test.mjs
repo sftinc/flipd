@@ -29,6 +29,19 @@ async function waitFor(fn, ms = 10000) {
   throw new Error('timed out waiting');
 }
 
+// "The worker has finished with this attempt", asked of the worker itself.
+// Polling state.json instead is what these tests used to do, and it is not the
+// same question: deploy() writes `live` at step 6, and runEntry then goes on
+// through prune, close and notify, so a state.json poll can fire while the entry
+// is still the queue's `running` slot — which is exactly how the `st.running ===
+// null` assertion below failed about one run in eighteen.
+async function waitIdle(p) {
+  await waitFor(async () => {
+    const st = await sendCommand(p.sock, { cmd: 'status' });
+    return st.ok && st.running === null && st.queued.length === 0;
+  });
+}
+
 test('reconcile: an unfinished attempt is interrupted; a finished failed deploy is not re-reported; orphan releases go', async () => {
   const p = await makePrefix();
   const dir = p.repoDir('r');
@@ -128,17 +141,20 @@ test('a signed push builds; run and rollback go through the socket; status repor
     const sig = 'sha256=' + createHmac('sha256', 'testsecret').update(body).digest('hex');
     const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sig, 'x-github-event': 'push' } });
     assert.equal(res.status, 202);
-    await waitFor(async () => (await readState(p.repoDir('r'))).live !== null);
+    await waitIdle(p);
     const first = (await readState(p.repoDir('r'))).live;
+    assert.ok(first, 'the pushed release is live');
     assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /webhook b{40} w/);
 
     assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r' }), { ok: true, queued: true });
-    await waitFor(async () => (await readState(p.repoDir('r'))).previous === first);
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).previous, first);
     const second = (await readState(p.repoDir('r'))).live;
 
     const rb = await sendCommand(p.sock, { cmd: 'rollback', name: 'r' });
     assert.deepEqual(rb, { ok: true, queued: true, target: first });
-    await waitFor(async () => (await readState(p.repoDir('r'))).live === first);
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).live, first);
     assert.equal((await readState(p.repoDir('r'))).previous, second);
 
     const st = await sendCommand(p.sock, { cmd: 'status' });
