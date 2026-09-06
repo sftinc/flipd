@@ -8,6 +8,7 @@ import add, { parseRepoUrl } from '../lib/cli/add.mjs';
 import check from '../lib/cli/check.mjs';
 import env from '../lib/cli/env.mjs';
 import remove from '../lib/cli/remove.mjs';
+import { findRepoFor } from '../lib/serve.mjs';
 
 function io() {
   let out = '', err = '';
@@ -72,6 +73,24 @@ test('add writes the config with placeholders, generates a key, prints the next 
   assert.equal(await add(['git@github.com:o/r.git'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x', '--name', 'Bad Name'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x'], { paths: p, ...io() }), 1, 'no name derivable and none given');
+});
+
+test('add given the https form writes the ssh REPO a push can actually match', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const o = io();
+  assert.equal(await add(['https://github.com/sftinc/Alias.Route', '--build', 'true', '--deploy', 'true'], { paths: p, ...o }), 0);
+  const text = await fs.readFile(p.repoConf('alias.route'), 'utf8');
+  // GitHub's push payload carries repository.ssh_url, and lib/serve.mjs matches
+  // REPO against it for strict equality. The https URL is fine to type; it is
+  // not fine to store.
+  assert.match(text, /^REPO=git@github\.com:sftinc\/Alias\.Route\.git$/m);
+  // The property that actually matters, checked end to end rather than by
+  // pattern: the webhook matcher finds this repo for a push to it.
+  const find = findRepoFor(p, () => {});
+  const matched = await find({ sshUrl: 'git@github.com:sftinc/Alias.Route.git', branch: 'main', id: null });
+  assert.equal(matched?.name, 'alias.route', 'a push to this repository matches the config add just wrote');
+  assert.equal(await find({ sshUrl: 'https://github.com/sftinc/Alias.Route', branch: 'main', id: null }), null);
 });
 
 test('add --key writes KEY, generates nothing, and prints the collaborator instruction', async () => {
