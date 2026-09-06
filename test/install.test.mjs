@@ -217,3 +217,24 @@ test('install.sh does not print a paste-ready sudoers line; the README carries i
   assert.match(readme, /NOPASSWD: \/usr\/local\/bin\/<your-adopt-script>/, 'the README carries the rule, scoped to one script');
   assert.match(readme, /chmod 0440 \/etc\/sudoers\.d\/flipd/, 'and the mode that sudo requires of it');
 });
+
+test('install.sh: the Caddy site block logs every request to journald, not to a file', async () => {
+  const text = await fs.readFile('install.sh', 'utf8');
+  const start = text.indexOf('CADDY_BLOCK=');
+  assert.ok(start >= 0, 'the Caddy block heredoc exists');
+  const block = text.slice(start, text.indexOf('\n}"', start) + 3);
+  // A single endpoint with a handful of requests a day has no volume argument
+  // against logging all of them, and the site block is the only layer that
+  // sees a request flipd never receives -- a TLS failure, a 404 on the wrong
+  // path, a proxy misconfiguration. On the first real install, proving that
+  // GitHub's ping had arrived took adding this by hand.
+  assert.match(block, /^\s+log \{\s*\n\s+output stderr\s*\n\s+\}/m, 'a log directive writing to stderr, which the unit sends to journald');
+  // `output file /var/log/caddy/...` is refused by the Debian unit's sandbox
+  // with "permission denied" even when caddy owns the directory; observed.
+  assert.doesNotMatch(block, /output file/, 'never a file: the sandbox refuses it');
+  // The directive must be inside the site block, not at the top level of the
+  // Caddyfile, or it would apply to (and be ambiguous with) other sites.
+  const logIndex = block.indexOf('log {');
+  const handleIndex = block.indexOf('handle /deploy');
+  assert.ok(logIndex > 0 && logIndex < handleIndex, 'log is declared inside the site, before the handlers');
+});

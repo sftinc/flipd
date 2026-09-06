@@ -225,7 +225,17 @@ systemctl is-active --quiet flipd || fail_started
 say "flipd.service is enabled and running"
 
 # 9. Caddy
+# `log` goes to stderr, which the Debian unit sends to journald, so
+# `journalctl -u caddy` shows every request to this site with its source IP,
+# method, URI and status. That is the only record of a request flipd never
+# receives -- a TLS failure, a 404 on the wrong path, a proxy that never
+# forwarded -- and on a first install it is how an operator confirms that
+# GitHub's ping arrived at all. Not `output file`: the unit's sandbox refuses
+# writes under /var/log/caddy even when caddy owns the directory.
 CADDY_BLOCK="${HOST:-deploy.example.com} {
+    log {
+        output stderr
+    }
     handle /deploy {
         reverse_proxy 127.0.0.1:9000
     }
