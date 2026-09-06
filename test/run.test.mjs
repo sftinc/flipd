@@ -622,9 +622,10 @@ test('a checkout with .gitmodules initialises submodules over the same key; the 
   await sub.commit({ 'inside.txt': 'from the submodule' });
   // git >= 2.38.1 refuses file:// transport inside submodule recursion unless
   // protocol.file.allow=always. The source repo's own `submodule add` is told
-  // on the command line. flipd's `submodule update` reads $HOME/.gitconfig,
-  // and gitEnv sets HOME to p.lib, so the test writes the setting there — no
-  // seam in the service.
+  // on the command line. flipd's `submodule update` reads $HOME/.gitconfig
+  // and nothing system-wide (gitEnv sets HOME to p.lib and GIT_CONFIG_SYSTEM
+  // to /dev/null), so the test writes the setting there — no seam in the
+  // service, and no /etc/gitconfig on the box can change the result.
   await t.src.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub.url, 'sub');
   await t.src.commit({}, 'add submodule');
   await fs.writeFile(path.join(t.p.lib, '.gitconfig'), '[protocol "file"]\n\tallow = always\n');
