@@ -562,6 +562,29 @@ test('add with an account: a failed conf write after the forge writes succeeded 
   }
 });
 
+test('add with an account: a bug in the forge client (not a ForgeError, no .code) still surfaces after undo runs, unlike an operational failure', async () => {
+  const { p, f, forgeOverride: baseOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, []],
+    'POST /repos/team/app/keys': [201, { id: 5 }],
+    'DELETE /repos/team/app/keys/5': [204, ''],
+  });
+  try {
+    // A TypeError thrown by addHook — a defect, not a rejected call — has no
+    // .code and is not a ForgeError, so it is the one case that must not be
+    // reported as an ordinary "nothing was written; fix the cause" failure.
+    const forgeOverride = (c) => ({ ...baseOverride(c), addHook: async () => { throw new TypeError('boom'); } });
+    const o = io();
+    await assert.rejects(add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), TypeError);
+    assert.ok(f.seen.some((r) => r.method === 'DELETE' && r.path === '/repos/team/app/keys/5'), 'the uploaded key is deleted again even though the error surfaces');
+    await assert.rejects(fs.stat(p.repoConf('app')));
+    await assert.rejects(fs.stat(p.repoDir('app')));
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
 test('add: an account conf that exists but cannot be parsed stops add loudly instead of falling back to the manual path', async () => {
   const p = await makePrefix();
   await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
