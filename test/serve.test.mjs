@@ -213,6 +213,34 @@ test('a push while pending is refused with 200', async () => {
   }
 });
 
+test('a push to a repo with an unreadable state.json is refused with 200, not lost to a 500', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.repoDir('r'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('r'), 'state.json'), 'not json');
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    const body = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: src.url } });
+    const sig = 'sha256=' + createHmac('sha256', 'testsecret').update(body).digest('hex');
+    const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sig, 'x-github-event': 'push' } });
+    // GitHub records a 500 as a failed delivery and will not retry it, so an
+    // unguarded readState here does not merely fail loudly: it loses the push.
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /refused/);
+    assert.ok(lines.some((l) => /\[r\] refused a push:.*state\.json/.test(l)), 'the reason is in journald');
+    assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /refused state\.json is unreadable/);
+    const st = await sendCommand(p.sock, { cmd: 'status' });
+    assert.equal(st.running, null);
+    assert.deepEqual(st.queued, [], 'nothing was queued against a repo whose state cannot be read');
+  } finally {
+    await svc.close();
+  }
+});
+
 test('serve closes the hook server if the socket fails to start, so a retry can bind the same port', async () => {
   const p = await makePrefix();
   const port = await getFreePort();

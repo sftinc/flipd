@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { emptyState, readState, writeState } from '../lib/state.mjs';
+import { emptyState, readState, writeState, StateError } from '../lib/state.mjs';
 
 test('missing state reads as empty', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
@@ -19,6 +19,23 @@ test('round trip, and a stale tmp file is ignored', async () => {
   assert.deepEqual(await readState(dir), s);
   const names = await fs.readdir(dir);
   assert.ok(names.includes('state.json'));
+});
+
+test('a state.json that is not readable as state is a typed error, never a silent empty state', async () => {
+  // Degrading to emptyState() here is the tempting fix and the wrong one: an
+  // empty state has no live, no previous and no releases map, so the next prune
+  // would read every release directory on the box as an unregistered orphan and
+  // delete it. `null` and `[]` matter as much as `{ truncated`, because they
+  // parse fine and then spread into nothing at all.
+  for (const text of ['{ truncated', 'null', '[]', '"nope"', '42']) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-deploy-state-'));
+    await fs.writeFile(path.join(dir, 'state.json'), text);
+    await assert.rejects(readState(dir), (e) => {
+      assert.ok(e instanceof StateError, `${text} must be a StateError, not a bare parse error`);
+      assert.match(e.message, /state\.json/, 'the message names the file an operator has to repair');
+      return true;
+    });
+  }
 });
 
 test('concurrent writes all land, none fails on a shared temporary file, and none is left behind', async () => {

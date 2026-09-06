@@ -496,6 +496,35 @@ test('a masked value in a fetch-failure detail is masked in events.log too, not 
   assert.ok(!(await fs.readFile((await t.state()).last.log, 'utf8')).includes('secretbranchvalue123'));
 });
 
+test('an unreadable state.json ends the attempt visibly, writes nothing over it, and leaves the releases alone', async () => {
+  const t = await setup({ extra: { ON_FAILURE: 'true' } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const stateFile = path.join(t.p.repoDir('r'), 'state.json');
+  const live = JSON.parse(await fs.readFile(stateFile, 'utf8')).live;
+  await fs.writeFile(stateFile, '{ truncated');
+
+  // Unguarded, this threw out of runEntry into queue.onError, which journals
+  // `crashed` and nothing else: no attempt log, no events.log line, no
+  // state.last, so the repo was silently dead while status went on showing the
+  // last successful run.
+  const outcome = await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  assert.equal(outcome, 'fetch failed', 'an attempt that ended at its first step with nothing on disk changed');
+  assert.equal(await fs.readFile(stateFile, 'utf8'), '{ truncated', 'the damaged file is left for whoever repairs it, never overwritten');
+  await fs.stat(path.join(t.p.repoDir('r'), 'releases', live));
+  assert.match(await t.events(), /fetch-failed .*state\.json is unreadable/);
+  assert.match(await t.events(), /notified .* exit 0/, 'ON_FAILURE runs, as it does for every other non-ok outcome');
+  // Found by content, not by taking the last name: setup()'s logs() sorts
+  // lexicographically, and within one second "<id>-2.log" sorts *before*
+  // "<id>.log" ('-' < '.'), so "the newest" is whichever second the two attempts
+  // happened to land in.
+  const texts = await Promise.all((await t.logs()).map((n) => fs.readFile(path.join(t.p.repoLog('r'), n), 'utf8')));
+  assert.equal(texts.length, 2, 'the failed attempt opened a log of its own');
+  const failed = texts.find((x) => /state\.json is unreadable/.test(x));
+  assert.ok(failed, 'and that log says what happened');
+  assert.match(failed, /outcome: fetch failed  state\.json is unreadable/);
+  assert.match(failed, /next: repair or move aside .*state\.json/);
+});
+
 test('rollback to a release whose directory is missing fails cleanly without flipping current or setting pending', async () => {
   const t = await setup();
   await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
