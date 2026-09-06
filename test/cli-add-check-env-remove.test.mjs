@@ -472,7 +472,7 @@ test('add with an account: a failed webhook call deletes the uploaded key and th
     const o = io();
     assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
     assert.match(o.err(), /500 boom/);
-    assert.match(o.err(), /nothing was written/);
+    assert.match(o.err(), /no repo config was written/);
     assert.ok(f.seen.some((r) => r.method === 'DELETE' && r.path === '/repos/team/app/keys/5'), 'the uploaded key is deleted again');
     await assert.rejects(fs.stat(p.repoConf('app')));
     await assert.rejects(fs.stat(p.repoDir('app')), 'the directory this run created is gone with its key pair');
@@ -535,7 +535,7 @@ test('add with an account: --key and an empty hooks list uploads no deploy key b
   }
 });
 
-test('add with an account: a failed conf write after the forge writes succeeded deletes the uploaded key and the generated pair', async () => {
+test('add with an account: a failed conf write after the forge writes succeeded deletes the uploaded key but leaves the webhook, and says so', async () => {
   if (process.getuid?.() === 0) return;   // root ignores mode bits; nothing to assert
   const { p, f, forgeOverride } = await accountSetup({
     'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
@@ -549,8 +549,15 @@ test('add with an account: a failed conf write after the forge writes succeeded 
     try {
       const o = io();
       assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
-      assert.match(o.err(), /nothing was written/);
+      assert.match(o.err(), /no repo config was written/);
       assert.ok(f.seen.some((r) => r.method === 'DELETE' && r.path === '/repos/team/app/keys/5'), 'the uploaded key is deleted again');
+      // The webhook this run created has no delete call at all (lib/forge.mjs
+      // has none): a leftover webhook is harmless (no secret to leak) and
+      // self-healing (the next add's listHooks finds it by URL and reuses
+      // it), unlike the key, which a re-upload would reject as a duplicate.
+      // So the message must not read as a clean slate — it names what survives.
+      assert.match(o.err(), /webhook https:\/\/deploy\.example\.com\/deploy \(id 9\) was already created.*left in place/);
+      assert.match(o.err(), /add again will find and reuse it/);
       noSecrets(o);
     } finally {
       await fs.chmod(p.reposDir, 0o755);
