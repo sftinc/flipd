@@ -46,11 +46,22 @@ test('install.sh parses under sh -n and its first real step is the root check', 
   assert.match(text, /\[!A-Za-z0-9\.-\]/, 'the case glob rejects any character outside a hostname, including a smuggled newline');
   // $HERE gets embedded in a systemd unit's ExecStart (see the next test) and
   // used throughout the script; it needs its own character-class guard, in
-  // the same style, distinguishable from HOST's (this one allows '/' and '_'
-  // for a real filesystem path, and forbids the same dangerous set: whitespace,
-  // '&', '|', backslash).
+  // the same style, distinguishable from HOST's. Deliberately wide: now that
+  // the unit is built with awk's ENVIRON rather than a sed replacement
+  // string, only whitespace, '&', '|', backslash and '%' are actually
+  // hazardous, so '+', '@', '~', ':' and ',' must all still be admitted.
   assert.match(text, /case "\$HERE" in/, 'installer validates $HERE against a safe character set via a case glob');
-  assert.match(text, /\[!A-Za-z0-9\/_\.-\]/, 'the $HERE glob rejects whitespace, &, |, and backslash');
+  assert.match(text, /\[!A-Za-z0-9\/_\.\+@~:,-\]/, 'the $HERE glob rejects whitespace, &, |, backslash and %, while admitting +, @, ~, : and ,');
+  // `case` glob character-class ranges (A-Za-z0-9) are locale-collated, and
+  // `sudo` preserves LANG/LC_* by default, so under a UTF-8 locale a range
+  // like a-z can collate in non-ASCII letters that have no business passing
+  // either guard. Both guards above only mean what they read as under C.
+  assert.match(text, /^export LC_ALL=C$/m, 'installer forces the C locale so the case-glob character ranges mean what they read as');
+  const lines = text.split('\n');
+  const lcAllIndex = lines.findIndex((l) => /^export LC_ALL=C$/.test(l));
+  const hostCaseIndex = lines.findIndex((l) => /case "\$HOST" in/.test(l));
+  const hereCaseIndex = lines.findIndex((l) => /case "\$HERE" in/.test(l));
+  assert.ok(lcAllIndex >= 0 && lcAllIndex < hostCaseIndex && lcAllIndex < hereCaseIndex, 'LC_ALL is forced before either locale-sensitive case glob runs');
 });
 
 test('install.sh: an existing conf is always reconciled to root:remote-deploy 0640', async () => {
@@ -94,11 +105,12 @@ test('install.sh: the service is verified to still be running, not just successf
 test('install.sh: systemctl enable and restart failures are surfaced, not swallowed by set -e with no output', async () => {
   const text = await fs.readFile('install.sh', 'utf8');
   // A masked unit, or a box where systemd is not PID 1, must not exit the
-  // script silently: stderr must stay visible (only stdout's "Created
-  // symlink ..." chatter is muted) and a failure must print our own message
-  // before exiting, the way the liveness check does.
-  assert.doesNotMatch(text, /systemctl enable remote-deploy >\/dev\/null 2>&1/, 'systemctl enable no longer swallows stderr');
-  assert.match(text, /systemctl enable remote-deploy >\/dev\/null \|\| \{ echo/, 'a failed systemctl enable prints its own diagnostic and exits, rather than aborting silently under set -e');
+  // script silently: systemctl's own "Created symlink ..." progress line
+  // goes to stderr already (systemd's log_info(), not stdout), so there is
+  // nothing to mute and no redirect belongs here; a failure must print our
+  // own message before exiting, the way the liveness check does.
+  assert.doesNotMatch(text, /systemctl enable remote-deploy >\/dev\/null/, 'systemctl enable does not redirect a stream that was never carrying its progress chatter');
+  assert.match(text, /systemctl enable remote-deploy \|\| \{ echo/, 'a failed systemctl enable prints its own diagnostic and exits, rather than aborting silently under set -e');
   // `restart` itself can fail outright (e.g. a broken ExecStart path) before
   // ever reaching the is-active settle-check below it; both failure paths
   // must land on the same journalctl hint.
@@ -123,6 +135,10 @@ test('install.sh: the installed unit points at this clone, wherever it lives, wi
   assert.doesNotMatch(text, />\s*\/etc\/systemd\/system\/remote-deploy\.service/, 'the unit is never written by a direct redirect to the live path');
   assert.match(text, /UNIT_TMP/, 'the substituted unit is built in a temp file first');
   assert.match(text, /install -m 0644 "\$UNIT_TMP" \/etc\/systemd\/system\/remote-deploy\.service/, 'the temp file is moved into place with install, not a redirect');
+  // A plain `rm -f "$UNIT_TMP"` placed after the install line is never
+  // reached if awk or install fails first, leaking the temp file. An EXIT
+  // trap runs regardless of how (or whether) the rest of the script exits.
+  assert.match(text, /trap 'rm -f "\$UNIT_TMP"' EXIT/, 'the temp unit file is cleaned up via an EXIT trap, not only on the success path');
 });
 
 test('install.sh: the Caddy keyring step is skip-if-present, and the group hint and logrotate print before the service and Caddy sections', async () => {
@@ -147,6 +163,16 @@ test('install.sh: the Caddy keyring step is skip-if-present, and the group hint 
   assert.ok(logrotateIndex < serviceSectionIndex, 'logrotate installs before the service-liveness gate, which can abort for reasons unrelated to logrotate');
   assert.ok(usermodIndex >= 0 && usermodIndex < serviceSectionIndex, 'the usermod hint prints before the service-liveness gate, which can abort a bad hand-written conf');
   assert.ok(caddySectionIndex >= 0 && usermodIndex < caddySectionIndex, 'the usermod hint prints before the Caddy section starts too');
+  // /etc/logrotate.d does not exist on every box (logrotate is only
+  // Priority: important, so a slim container or minbase image can lack it),
+  // and `install` without -d/-D does not create a missing destination
+  // directory -- it exits 71. Now that this step runs ahead of the service
+  // section, that failure would abort the whole install (unit never
+  // written, daemon-reload/enable/restart never run) rather than the
+  // harmless post-service failure it used to be.
+  const logrotateDirIndex = lines.findIndex((l) => /^install -d -m 0755 \/etc\/logrotate\.d$/.test(l));
+  const logrotateInstallIndex = lines.findIndex((l) => /^install -m 0644 "\$HERE\/remote-deploy\.logrotate" \/etc\/logrotate\.d\/remote-deploy$/.test(l));
+  assert.ok(logrotateDirIndex >= 0 && logrotateInstallIndex >= 0 && logrotateDirIndex < logrotateInstallIndex, 'the logrotate.d directory is created before the config is installed into it');
 });
 
 test('install.sh: refuses an empty GitHub host-key response, and makes the entry point executable before starting the service', async () => {

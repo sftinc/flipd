@@ -15,10 +15,10 @@ Design: `docs/superpowers/specs/2026-09-05-remote-deploy-design.md`.
 TLS, and checks the path with a signed ping. Without it, everything else
 happens and the Caddy block is printed to paste by hand.
 
-The installer's last step prints a `sudo usermod -aG remote-deploy <you>`
-line — run it (and start a fresh login shell, or `newgrp remote-deploy`) so
-your own account can use the commands below without `sudo`. See
-[Permissions](#permissions).
+Partway through its output, the installer prints a
+`sudo usermod -aG remote-deploy <you>` line — run it (and start a fresh login
+shell, or `newgrp remote-deploy`) so your own account can use the commands
+below without `sudo`. See [Permissions](#permissions).
 
 ## Add a repo
 

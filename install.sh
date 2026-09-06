@@ -7,6 +7,13 @@
 # to this box. Without --host, everything else happens and the Caddy block is
 # printed to paste by hand.
 set -eu
+# The --host and $HERE checks below rely on `case` glob character-class ranges
+# (A-Za-z0-9) meaning exactly the C-locale byte ranges they read as. Ranges
+# are locale-collated, and `sudo` preserves LANG/LC_* by default, so under a
+# UTF-8 locale a range like a-z can collate in characters like 'é' that are
+# not ASCII letters at all -- a guard that does not guard what it says is
+# worth nothing the day it matters. Force C for the life of this script.
+export LC_ALL=C
 
 HOST=
 while [ $# -gt 0 ]; do
@@ -41,12 +48,17 @@ fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 # $HERE is later embedded in a systemd unit's ExecStart (see step 8) and used
 # unquoted-adjacent in several shell constructs throughout this script; a
-# path containing whitespace, '&', '|', or a backslash is unsafe in at least
-# one of those contexts (word-splitting a systemd ExecStart, or acting as a
-# metacharacter to a text-processing tool). Refuse it once, here, rather than
-# downstream where the failure mode is a mangled or truncated systemd unit.
+# path containing whitespace, '&', '|', a backslash, or '%' is unsafe in at
+# least one of those contexts (word-splitting a systemd ExecStart, or acting
+# as a metacharacter to a text-processing tool or to systemd's own specifier
+# expansion). Refuse it once, here, rather than downstream where the failure
+# mode is a mangled or truncated systemd unit. The guard is deliberately not
+# narrower than that: now that the unit is built with awk's ENVIRON (which
+# passes bytes through unchanged) instead of a sed replacement string, '+',
+# '@', '~', ':' and ',' are all just bytes to it, so a clone at, say,
+# /srv/dev+ops/remote-deploy has no reason to be refused.
 case "$HERE" in
-  *[!A-Za-z0-9/_.-]*) echo "install.sh: this clone's path ($HERE) has a character unsafe to embed in a systemd unit; move the clone to a path using only letters, digits, '/', '_', '.', '-'" >&2; exit 1 ;;
+  *[!A-Za-z0-9/_.+@~:,-]*) echo "install.sh: this clone's path ($HERE) has a character unsafe to embed in a systemd unit; move the clone to a path using only letters, digits, '/', '_', '.', '+', '@', '~', ':', ',', '-'" >&2; exit 1 ;;
 esac
 say() { printf '%s\n' "$*"; }
 
@@ -126,6 +138,15 @@ chmod +x "$HERE/bin/remote-deploy"
 say "linked /usr/local/bin/remote-deploy"
 
 # 7. logrotate
+# /etc/logrotate.d does not exist on every box (a slim container or a
+# minbase image can lack it -- logrotate is only Priority: important, so
+# both exclude it by default), and `install` (without -d/-D) does not create
+# a missing destination directory; it exits 71. Now that this step runs
+# ahead of the service section, that used to be a harmless post-service
+# failure and would now be a hard abort before the unit is even written --
+# create the directory explicitly first, the same way the Caddy conf.d step
+# below does.
+install -d -m 0755 /etc/logrotate.d
 install -m 0644 "$HERE/remote-deploy.logrotate" /etc/logrotate.d/remote-deploy
 
 # The socket at /run/remote-deploy/remote-deploy.sock and /var/log/remote-deploy
@@ -165,20 +186,24 @@ else
   # processing (unlike `awk -v`, which does), and writing to a temp file
   # first means a failure here can never truncate the live unit.
   UNIT_TMP=$(mktemp)
+  # Not just "rm -f $UNIT_TMP" after the install below: that line is never
+  # reached if awk or install fails first, leaking the temp file (nothing
+  # secret in it, but still worth cleaning up). A trap runs on any exit.
+  trap 'rm -f "$UNIT_TMP"' EXIT
   HERE="$HERE" awk '
     /^ExecStart=/ { print "ExecStart=" ENVIRON["HERE"] "/bin/remote-deploy serve"; next }
     { print }
   ' "$HERE/remote-deploy.service" > "$UNIT_TMP"
   install -m 0644 "$UNIT_TMP" /etc/systemd/system/remote-deploy.service
-  rm -f "$UNIT_TMP"
   say "note: this clone is at $HERE, not /opt/remote-deploy; installed unit's ExecStart was rewritten to $HERE/bin/remote-deploy serve"
 fi
 systemctl daemon-reload
-# stderr stays visible (only stdout's "Created symlink ..." chatter is
-# muted): a masked unit, or a box where systemd is not PID 1, must abort with
-# systemctl's own diagnostic plus a line of our own, not silently under
-# `set -e` with every stream swallowed.
-systemctl enable remote-deploy >/dev/null || { echo "systemctl enable remote-deploy failed (see the systemctl output above); is systemd running as PID 1 on this box?" >&2; exit 1; }
+# systemctl's own progress line ("Created symlink ...") goes to stderr
+# already (systemd's log_info(), not stdout), so there is nothing to mute
+# here and no redirect is needed: a masked unit, or a box where systemd is
+# not PID 1, must abort with systemctl's own diagnostic plus a line of our
+# own, not silently under `set -e` with every stream swallowed.
+systemctl enable remote-deploy || { echo "systemctl enable remote-deploy failed (see the systemctl output above); is systemd running as PID 1 on this box?" >&2; exit 1; }
 fail_started() {
   echo "remote-deploy.service did not stay running; check: journalctl -u remote-deploy" >&2
   exit 1
