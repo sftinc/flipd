@@ -115,6 +115,7 @@ test('check runs on the worker through the socket, refuses when busy', async () 
     assert.equal(r.ok, true);
     assert.equal(r.passed, true);
     assert.equal(r.behind, true, 'nothing is live yet');
+    assert.equal(r.pending, false, 'nothing is flipped');
     const text = r.rows.map(([k, v]) => `${k} ${v}`).join('\n');
     assert.match(text, /clone created/);
     assert.match(text, new RegExp(`main ${sha.slice(0, 7)}.*live: none.*behind`));
@@ -123,6 +124,32 @@ test('check runs on the worker through the socket, refuses when busy', async () 
     const busy = await sendCommand(p.sock, { cmd: 'check', name: 'r', setRemote: false }, { timeoutMs: 30000 });
     assert.equal(busy.ok, false);
     assert.match(busy.error, /^busy: running r, 0 queued$/);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('check reports an unconfirmed pending release separately from being behind', async () => {
+  // The two call for opposite actions: behind wants `flipd run`, pending wants
+  // a look first. Folding pending into behind is what let the README's cron
+  // catch-up force-build over an unconfirmed flip. So: live at the head with
+  // a pending release is pending and not behind.
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  const sha = await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.repoDir('r'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('r'), 'key'), 'not-a-real-key');
+  await writeState(p.repoDir('r'), { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha }, b: { sha: 'y' } } });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const r = await sendCommand(p.sock, { cmd: 'check', name: 'r', setRemote: false }, { timeoutMs: 30000 });
+    assert.equal(r.ok, true);
+    assert.equal(r.passed, true);
+    assert.equal(r.behind, false, 'live is the head');
+    assert.equal(r.pending, true, 'b is flipped but unconfirmed');
+    assert.ok(r.rows.some(([k, v]) => k === 'pending' && /^b is flipped but unconfirmed/.test(v)), 'the pending row still names the release');
   } finally {
     await svc.close();
   }

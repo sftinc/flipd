@@ -97,6 +97,11 @@ test('check: prints the rows the service returns, exits by passed, reports busy 
   const o = io();
   assert.equal(await check(['r', '--set-remote'], { paths: p, ...o, sendOverride: send({ ok: true, passed: true, behind: true, rows: [['config', 'ok'], ['main', '5ac3c5a  (live: none)  behind']] }) }), 4);
   assert.equal(await check(['r'], { paths: p, ...io(), sendOverride: send({ ok: true, passed: true, behind: false, rows: [['main', 'x  up to date']] }) }), 0);
+  // 5 is pending, and it wins over behind: the catch-up script's `[ $? -eq 4 ]`
+  // must not force-build over an unconfirmed flip.
+  assert.equal(await check(['r'], { paths: p, ...io(), sendOverride: send({ ok: true, passed: true, behind: false, pending: true, rows: [['pending', 'b is flipped but unconfirmed']] }) }), 5);
+  assert.equal(await check(['r'], { paths: p, ...io(), sendOverride: send({ ok: true, passed: true, behind: true, pending: true, rows: [['pending', 'b is flipped but unconfirmed']] }) }), 5);
+  assert.equal(await check(['r'], { paths: p, ...io(), sendOverride: send({ ok: true, passed: false, behind: true, pending: true, rows: [['remote', 'MISMATCH']] }) }), 1, 'a failed row still outranks both');
   assert.deepEqual(sent[0], { cmd: 'check', name: 'r', setRemote: true });
   assert.match(o.out(), /^config\s+ok$/m);
   assert.match(o.out(), /^main\s+5ac3c5a/m);
