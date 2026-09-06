@@ -267,7 +267,6 @@ if [ -n "$HOST" ]; then
   # Prove the path end to end: a ping signed with this box's secret gets "pong"
   # from flipd and nothing else. (Caddy stamps its own Server header on proxied
   # responses too, so a bare 404 could never tell the two apart.)
-  sleep 2
   SECRET=$(sed -n 's/^WEBHOOK_SECRET=//p' /etc/flipd/flipd.conf)
   BODY='{"zen":"install check"}'
   # SECRET reaches node through the environment, not argv: an argument would be
@@ -276,12 +275,37 @@ if [ -n "$HOST" ]; then
   SIG=$(printf '%s' "$BODY" | SECRET="$SECRET" node -e '
     let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
       console.log("sha256=" + require("crypto").createHmac("sha256", process.env.SECRET).update(s).digest("hex")); })')
-  ANSWER=$(curl -s -m 15 -X POST "https://$HOST/deploy" -H "x-github-event: ping" -H "x-hub-signature-256: $SIG" \
-           -H 'content-type: application/json' --data "$BODY" || echo "(no response)")
+  # Caddy accepts connections the instant it is reloaded, but on a first install
+  # it has no certificate yet -- it is still finishing an ACME order, and until
+  # that lands every TLS handshake, this one included, fails outright. A single
+  # fixed pause cannot straddle that: issuance took about four seconds on the
+  # first real install, so `sleep 2` reported NOT OK on an install that was in
+  # fact perfect and sent the operator to journalctl for a problem that had
+  # already resolved itself. A false alarm here is worse than a slow check,
+  # because it teaches the operator to disbelieve the one line that is supposed
+  # to prove the path end to end.
+  #
+  # So: retry with a growing gap. The first wait is short enough that a re-run
+  # on a warm box -- certificate already on disk -- answers on attempt one and
+  # costs 3s, while the widening tail covers a cold ACME order without letting
+  # a genuinely broken DNS record hang the install indefinitely. Total ceiling
+  # is 50s across five attempts, then it reports failure as before.
+  ANSWER=
+  WAITED=0
+  for DELAY in 3 5 8 13 21; do
+    sleep "$DELAY"
+    WAITED=$((WAITED + DELAY))
+    ANSWER=$(curl -s -m 15 -X POST "https://$HOST/deploy" -H "x-github-event: ping" -H "x-hub-signature-256: $SIG" \
+             -H 'content-type: application/json' --data "$BODY" || echo "(no response)")
+    # An explicit `if`, not `[ ... ] && break`: under `set -e` a trailing
+    # `&&` list that tests false is a failing command at statement level, and
+    # would abort the install on the very first not-yet-ready attempt.
+    if [ "$ANSWER" = "pong" ]; then break; fi
+  done
   if [ "$ANSWER" = "pong" ]; then
-    say "POST https://$HOST/deploy (signed ping)  ->  pong   ok"
+    say "POST https://$HOST/deploy (signed ping)  ->  pong   ok (${WAITED}s)"
   else
-    say "POST https://$HOST/deploy (signed ping)  ->  '$ANSWER'   NOT OK: check DNS for $HOST, 'journalctl -u caddy', 'journalctl -u flipd'"
+    say "POST https://$HOST/deploy (signed ping)  ->  '$ANSWER'   NOT OK after ${WAITED}s: check DNS for $HOST, 'journalctl -u caddy', 'journalctl -u flipd'"
   fi
 fi
 
