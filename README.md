@@ -74,6 +74,12 @@ those apart, use the exit code directly — see `check`'s row in
 [Commands](#commands): `0` up to date, `4` behind (or unconfirmed), `1` a
 failed row, `3` service down.
 
+To catch a lost webhook and deploy anyway:
+
+    flipd check app >/dev/null; [ $? -eq 4 ] && flipd run app
+
+`run` is a forced build, so a catch-up ignores `WATCH` and `IGNORE`.
+
 ## Where things live
 
 Every path is keyed by the repo's name, which `add` takes from the URL
@@ -91,7 +97,7 @@ For a repo named `app`:
 | `/var/lib/flipd/app/current` | a symlink to the release most recently flipped to, confirmed or not |
 | `/var/lib/flipd/app/state.json` | which release is live, previous and pending |
 | `/var/log/flipd/app/<id>.log` | one attempt log per build or rollback |
-| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months) |
+| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries GitHub's delivery id, so a delivery in the repository's webhook log can be found here with `grep` |
 
 flipd writes nowhere else. Getting the release to wherever it is served from
 is `DEPLOY`'s job: see [docs/deploy-recipes.md](docs/deploy-recipes.md).
@@ -109,7 +115,7 @@ logged to journald and skipped, and the other repos are unaffected. `REPO`,
 
 | Key | Default | Meaning |
 |---|---|---|
-| `REPO` | required | The URL to fetch. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git`, because a push is matched to a repo by comparing this value to the payload's `ssh_url` exactly. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
+| `REPO` | required | The URL to fetch. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git`, because a push is matched to a repo by comparing this value to the payload's `ssh_url`, case-insensitively. A repository renamed on GitHub is matched by its numeric id once one webhook run has recorded it, and the attempt log says to update `REPO`. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
 | `BRANCH` | `main` | The branch to follow. A push to any other branch is answered `ignored`. |
 | `ROOT` | `.` | The directory inside the checkout that `BUILD` and `DEPLOY` run in. Relative, no `..`. It does not change where flipd puts files. |
 | `BUILD` | required | Run by `/bin/sh -c` in the fresh checkout. A non-zero exit is `build failed`: nothing is flipped and the live release is untouched. |
@@ -118,7 +124,7 @@ logged to journald and skipped, and the other repos are unaffected. `REPO`,
 | `WATCH` | everything | Space-separated globs. A push whose changed files (since the live release) match none of them is `skipped`. |
 | `IGNORE` | none | Globs subtracted from `WATCH`: a changed file matching one does not count. |
 | `TIMEOUT` | `1200` | Seconds, applied to `BUILD` and to `DEPLOY` separately. A command still running at the limit is killed and the attempt fails. |
-| `KEY` | `/var/lib/flipd/<name>/key` | The private key for the fetch. `add --key` sets it, for a machine user's key shared across repos. |
+| `KEY` | `/var/lib/flipd/<name>/key` | The private key for the fetch. `add --key` sets it, for a machine user's key shared across repos. A deploy key is accepted by one repository only, so a repo whose submodule is a second private repository needs `--key` with a machine user's key that can read both. |
 | `BUILD_ENV_FILE` | `/etc/flipd/env/<name>.build` | Where `BUILD`'s extra environment is read from. |
 | `DEPLOY_ENV_FILE` | `/etc/flipd/env/<name>.deploy` | The same for `DEPLOY` and `ON_FAILURE`. |
 | `HOOK_HOST` | written by `add` | The `PUBLIC_HOST` at the time `add` ran. `check` prints the webhook recipe with `PUBLIC_HOST` if it is set, otherwise this. |
@@ -130,6 +136,10 @@ covers only top-level markdown. The filter runs only when there is a live
 release to diff against: `flipd run` bypasses it, so does an empty commit,
 and if the live sha can no longer be found in the clone (a force-push) flipd
 builds rather than guess.
+
+When the checkout contains `.gitmodules`, submodules are initialised
+recursively over the same key before `BUILD` runs. A submodule that cannot
+be fetched is `checkout failed`, and the live release is untouched.
 
 ## What BUILD and DEPLOY see
 
@@ -241,6 +251,15 @@ skimmed when it is not.
 Restarting drops anything mid-build: the in-flight command is killed, its
 attempt is logged as `interrupted`, and the in-memory queue is lost. Check
 that `flipd status` shows nothing running first.
+
+## What flipd does not do
+
+- **Poll.** It reacts to pushes. `check`'s exit code is the hook for a
+  schedule, and cron is the schedule — see [Every day](#every-day).
+- **Post commit statuses.** It holds a deploy key and no API token, by
+  decision, and a deploy key cannot write a status. `ON_FAILURE` is the
+  substitute: the only signal is the one you wire up.
+- **Notify on its own.** Beyond running `ON_FAILURE`, nothing.
 
 ## Tests
 

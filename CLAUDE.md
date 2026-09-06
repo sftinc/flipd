@@ -43,6 +43,14 @@ it is a defect.
 
 **Zero dependencies.** No `npm install`, no lockfile, no runtime packages.
 
+**The listener sits behind a proxy.** In the default install `remoteAddress`
+on `:9000` is Caddy, never the client (`LISTEN` can bind elsewhere, and then
+it is the client). Any source-address check must read `X-Forwarded-For` and
+trust it only when the connection itself came from loopback; trusting it
+from anywhere lets any client claim GitHub's address. There is no such
+check today — the HMAC is the authentication — and the case for one is
+written up in `docs/todo/2026-09-06-source-ip-filtering.md`.
+
 ## Architecture
 
 One process (`flipd serve`, run by systemd) owns everything mutable. It listens on

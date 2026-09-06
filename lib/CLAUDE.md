@@ -39,7 +39,9 @@ the never-print rule and the zero-dependency rule bind every file here.
 - **A corrupt `state.json` refuses rather than resetting.** See the root file.
 - **The webhook answers `200` for things that are not successes** (`ignored`,
   a refused pending push). GitHub records a 500 as a failed delivery and will not
-  retry it, so a 500 loses the push. Only signature failures get 401.
+  retry it, so a 500 loses the push. Only signature failures get 401. The one
+  `503` is `stopping`: the service is shutting down and the push was discarded,
+  which is a failed delivery, not a judged one.
 - **`run.mjs` is 450 lines.** It is one sequence with one failure model; splitting
   it by phase would spread the state machine across files. Leave it whole.
 
