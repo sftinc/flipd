@@ -100,7 +100,7 @@ For a repo named `app`:
 | `/var/lib/flipd/app/current` | a symlink to the release most recently flipped to, confirmed or not |
 | `/var/lib/flipd/app/state.json` | which release is live, previous and pending |
 | `/var/log/flipd/app/<id>.log` | one attempt log per build or rollback |
-| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries GitHub's delivery id, so a delivery that matched a repo can be found here with `grep` |
+| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries GitHub's delivery id, so a delivery that matched a repo can be found here with `grep`; one that was ignored (a tag, a deleted branch, no matching repo) carries it in `journalctl -u flipd` instead |
 
 flipd writes nowhere else. Getting the release to wherever it is served from
 is `DEPLOY`'s job: see [docs/deploy-recipes.md](docs/deploy-recipes.md).
