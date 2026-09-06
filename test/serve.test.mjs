@@ -310,6 +310,18 @@ test('findRepoFor: a corrupt state.json for one repo does not break rename-match
   assert.ok(lines.some((l) => /\[corrupt\].*could not read state/.test(l)));
 });
 
+test('findRepoFor: REPO matches ssh_url case-insensitively, so a lowercase conf still receives a push', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'git@github.com:myorg/myapp.git', BUILD: 'true', DEPLOY: 'true' });
+  const find = findRepoFor(p, () => {});
+  // GitHub renders ssh_url in the repository's canonical case. ls-remote is
+  // case-insensitive, so `check` passes; without this the push never matched
+  // and github_id was never recorded, because no webhook run ever happened.
+  const repo = await find({ sshUrl: 'git@github.com:MyOrg/MyApp.git', branch: 'main', id: null });
+  assert.equal(repo?.name, 'app');
+  assert.equal(await find({ sshUrl: 'git@github.com:MyOrg/Other.git', branch: 'main', id: null }), null, 'case is the only thing forgiven');
+});
+
 test('shutdown journals a queued-but-not-yet-started entry that gets dropped', async () => {
   const p = await makePrefix();
   await writeMain(p);
