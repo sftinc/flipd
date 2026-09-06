@@ -44,7 +44,8 @@ below without `sudo`. See [Permissions](#permissions).
 
     sudo flipd add git@github.com:you/app.git --root .
     # paste the deploy key and the webhook it prints (or run the deploy-key
-    # command and the webhook pipeline it prints)
+    # command and the webhook pipeline it prints). If you set --host after
+    # this, `flipd check app` prints the webhook recipe again with the real host.
     sudo vi /etc/flipd/repos/app.conf        # BUILD and DEPLOY
     flipd check app
 
@@ -114,7 +115,7 @@ skimmed when it is not.
 |---|---|---|
 | `flipd serve` | run by systemd as `flipd` | runs until `SIGTERM`/`SIGINT` |
 | `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem; `2` usage |
-| `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)) |
+| `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the webhook recipe (Payload URL, secret location, `gh api` pipeline) with the current `PUBLIC_HOST`, so it can be read again after `--host` |
 | `flipd run <name>` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down |
 | `flipd rollback <name>` | group (or sudo) | same as `run`, printing `queued rollback of <name> to <sha>` or `not queued: <reason>` |
 | `flipd status [name]` | group (or sudo) | `0` printed (the activity column falls back to `service down` if the socket is merely unreachable); `1` no such repo / nothing configured, **or** a bare `EACCES` if you're not in the `flipd` group — see [Permissions](#permissions) |

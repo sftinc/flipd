@@ -47,29 +47,10 @@ test('add writes the config with placeholders, generates a key, prints the next 
   assert.match(o.out(), /https:\/\/deploy\.example\.com\/deploy/);
   assert.match(o.out(), /flipd check r/);
   assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
-  // The webhook-creation recipe must never carry WEBHOOK_SECRET as a command's
-  // argv token (readable by any local user via `ps`/`/proc/<pid>/cmdline` for
-  // the life of that process) or leave it sitting in shell history as part of a
-  // `-f config[secret]=...` flag: it must go over stdin instead.
-  assert.match(o.out(), /--input -/, 'the webhook is created from a JSON body on stdin, not -f flags');
-  assert.match(o.out(), /--method POST/, 'the recipe posts explicitly, so --input - can never be read as a silent GET');
-  assert.doesNotMatch(o.out(), /-f\s+"?config\[secret\]/, 'no gh flag carries config[secret] on argv');
-  assert.match(o.out(), /process\.env\.SECRET/, 'the secret reaches node through the environment, not argv');
-  const ghApiLines = o.out().split('\n').filter((l) => /\bgh api\b/.test(l));
-  assert.ok(ghApiLines.length > 0, 'the recipe does call gh api');
-  for (const l of ghApiLines) {
-    // The narrowest, regression-proof property: whatever shape the recipe
-    // takes, the *line that actually invokes gh* must carry neither a
-    // command substitution as one of its own arguments (a `-f
-    // config[secret]=$(...)` regression, one line) nor the literal
-    // `config[secret]` flag (the same regression split across two lines --
-    // `SECRET=$(...)` on one, `gh api ... -f "config[secret]=$SECRET"` on
-    // the next -- which the two checks above cannot see because neither the
-    // "no -f config[secret]" pattern nor "$(" needs to appear on this line
-    // for that split form to slip through).
-    assert.ok(!/\$\(/.test(l), `the gh api invocation itself takes no command substitution as an argument: ${l}`);
-    assert.ok(!/config\[secret\]/.test(l), `the gh api invocation line itself never names config[secret]; the secret must reach it only via --input -'s stdin: ${l}`);
-  }
+  // The recipe's argv-safety properties are tested at the source in
+  // test/recipe.test.mjs. Here: only that add prints it, framed as step 2.
+  assert.match(o.out(), /^2\. add the webhook/m);
+  assert.match(o.out(), /gh api repos\/o\/r\/hooks --method POST --input -/);
   assert.equal(await add(['git@github.com:o/r.git'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x', '--name', 'Bad Name'], { paths: p, ...io() }), 1);
   assert.equal(await add(['file:///x'], { paths: p, ...io() }), 1, 'no name derivable and none given');
@@ -127,6 +108,43 @@ test('check: prints the rows the service returns, exits by passed, reports busy 
   assert.equal(await check(['r'], { paths: p, ...down, sendOverride: async () => { throw Object.assign(new Error('x'), { code: 'ECONNREFUSED' }); } }), 3);
   assert.match(down.err(), /service down/);
   assert.equal(await check(['../x'], { paths: p, ...io(), sendOverride: send({ ok: true }) }), 1, 'bad name never reaches the socket');
+});
+
+test('check prints the webhook recipe with the current PUBLIC_HOST, so it can be read after --host', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'r', { REPO: 'git@github.com:o/r.git', BRANCH: 'main', ROOT: '.', BUILD: 'true', DEPLOY: 'true' });
+  const send = (reply) => async () => reply;
+  const ok = { ok: true, passed: true, behind: false, rows: [['main', 'x  up to date']] };
+
+  // Host known: the recipe carries it.
+  await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
+  const o = io();
+  assert.equal(await check(['r'], { paths: p, ...o, sendOverride: send(ok) }), 0);
+  assert.match(o.out(), /^main\s+x  up to date$/m, 'the rows still print first');
+  assert.match(o.out(), /^webhook/m, 'the recipe is a labelled section after the rows');
+  assert.match(o.out(), /Payload URL\s+https:\/\/deploy\.example\.com\/deploy/);
+  assert.match(o.out(), /gh api repos\/o\/r\/hooks --method POST --input -/);
+  assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
+
+  // Host not known yet: the placeholder, not a crash and not silence.
+  await writeMain(p);
+  const o2 = io();
+  assert.equal(await check(['r'], { paths: p, ...o2, sendOverride: send(ok) }), 0);
+  assert.match(o2.out(), /https:\/\/<PUBLIC_HOST>\/deploy/);
+
+  // A failed check still prints it: the rows say what failed, the recipe is
+  // still the next thing the operator needs.
+  const o3 = io();
+  assert.equal(await check(['r'], { paths: p, ...o3, sendOverride: send({ ok: true, passed: false, rows: [['remote', 'MISMATCH']] }) }), 1);
+  assert.match(o3.out(), /Payload URL/);
+
+  // No repo conf on disk (the service reported on a name it knows but we
+  // cannot read): the rows print, the recipe is skipped, and the exit code is
+  // the service's verdict, not a read error.
+  const o4 = io();
+  assert.equal(await check(['nothere'], { paths: p, ...o4, sendOverride: send(ok) }), 0);
+  assert.match(o4.out(), /^main\s+x  up to date$/m);
+  assert.doesNotMatch(o4.out(), /Payload URL/);
 });
 
 test('env: --set and --unset edit one line, print key names only, validate, honour BUILD_ENV_FILE', async () => {
