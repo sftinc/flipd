@@ -151,3 +151,56 @@ test('a throwing onPush is a 500, and the server survives it', async () => {
     await h.close();
   }
 });
+
+test('a Forgejo delivery is accepted: GitHub compatibility headers, a push payload with no `deleted`, pusher from `login`', async () => {
+  const pushes = [];
+  const lines = [];
+  const forgeRepos = [{ name: 'f', repo: 'ssh://git@forge.example.com:2222/team/app.git', branch: 'main' }];
+  const h = await listen({
+    secret: 's',
+    findRepo: async ({ sshUrl, branch }) => forgeRepos.find((r) => r.repo === sshUrl && r.branch === branch) ?? null,
+    onPush: async (repo, info) => { pushes.push([repo.name, info]); return { status: 202, body: `queued ${repo.name}` }; },
+    journal: (l) => lines.push(l),
+  });
+  try {
+    // Shape and headers taken from Forgejo's own webhook code
+    // (services/webhook/shared/payloader.go, modules/structs/hook.go): the
+    // GitHub names are sent alongside the Forgejo, Gitea and Gogs ones, the
+    // sha256 signature carries the "sha256=" prefix there and no prefix in
+    // X-Forgejo-Signature, and the pusher is a user object with `login`.
+    const body = JSON.stringify({
+      ref: 'refs/heads/main', before: '0'.repeat(40), after: 'a'.repeat(40), compare_url: '', commits: [], total_commits: 0, head_commit: null,
+      repository: { id: 12, full_name: 'team/app', ssh_url: 'ssh://git@forge.example.com:2222/team/app.git', clone_url: 'https://forge.example.com/team/app.git' },
+      pusher: { id: 1, login: 'alice', full_name: 'Alice', username: 'alice' },
+      sender: { id: 1, login: 'alice' },
+    });
+    const hex = createHmac('sha256', 's').update(body).digest('hex');
+    const headers = {
+      'content-type': 'application/json',
+      'x-forgejo-delivery': 'd1', 'x-forgejo-event': 'push', 'x-forgejo-event-type': 'push', 'x-forgejo-signature': hex,
+      'x-gitea-delivery': 'd1', 'x-gitea-event': 'push', 'x-gitea-event-type': 'push', 'x-gitea-signature': hex,
+      'x-gogs-delivery': 'd1', 'x-gogs-event': 'push', 'x-gogs-event-type': 'push', 'x-gogs-signature': hex,
+      'x-hub-signature': 'sha1=' + createHmac('sha1', 's').update(body).digest('hex'),
+      'x-hub-signature-256': 'sha256=' + hex,
+      'x-github-delivery': 'd1', 'x-github-event': 'push', 'x-github-event-type': 'push',
+    };
+    const r = await h.post(body, headers);
+    assert.equal(r.status, 202);
+    assert.equal(pushes.length, 1);
+    const [name, info] = pushes[0];
+    assert.equal(name, 'f');
+    assert.equal(info.sshUrl, 'ssh://git@forge.example.com:2222/team/app.git');
+    assert.equal(info.id, 12);
+    assert.equal(info.sha, 'a'.repeat(40));
+    assert.equal(info.pusher, 'alice', 'Forgejo has no pusher.name; login is the fallback');
+    assert.equal(info.delivery, 'd1', 'X-GitHub-Delivery is one of the compatibility headers too');
+    // Forgejo has no `deleted` on a push; a branch deletion is a `delete`
+    // event, which is ignored like every non-push event.
+    const del = await h.post(body, { ...headers, 'x-github-event': 'delete', 'x-forgejo-event': 'delete' });
+    assert.equal(del.status, 200);
+    assert.equal(del.text, 'ignored');
+    assert.equal(pushes.length, 1);
+  } finally {
+    await h.close();
+  }
+});
