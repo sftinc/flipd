@@ -653,3 +653,19 @@ test('a submodule that cannot be fetched is checkout failed, with live and curre
   assert.match(await fs.readFile(s.last.log, 'utf8'), /outcome: checkout failed/);
   assert.match(await t.events(), /finished .* checkout failed/);
 });
+
+test('a submodule URL with userinfo is redacted in the attempt log, both streamed and in the failure detail', async () => {
+  const t = await setup();
+  // .gitmodules is repo content, not REPO, so it carries no guard against
+  // userinfo. Written and staged by hand: `submodule add` refuses a URL it
+  // cannot reach, but a gitlink entry (mode 160000) needs no real object —
+  // git never resolves it until `submodule update` tries to clone.
+  await fs.writeFile(path.join(t.src.dir, '.gitmodules'), '[submodule "sub"]\n\tpath = sub\n\turl = https://tokenabc123@127.0.0.1:1/o/r.git\n');
+  await t.src.git('add', '.gitmodules');
+  await t.src.git('update-index', '--add', '--cacheinfo', `160000,${'1'.repeat(40)},sub`);
+  await t.src.git('commit', '-q', '-m', 'add unreachable, credentialed submodule');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'checkout failed');
+  const log = await fs.readFile((await t.state()).last.log, 'utf8');
+  assert.doesNotMatch(log, /tokenabc123/, 'the credential must not reach the attempt log');
+  assert.match(log, /\*\*\*@127\.0\.0\.1:1/, 'the redacted form of the url is still visible');
+});
