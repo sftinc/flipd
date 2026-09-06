@@ -515,6 +515,53 @@ test('add with an account: an existing webhook with the same URL is left alone, 
   }
 });
 
+test('add with an account: --key and an empty hooks list uploads no deploy key but still creates exactly one webhook', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, []],
+    'POST /repos/team/app/hooks': [201, { id: 9 }],
+  });
+  try {
+    const shared = path.join(p.etc, 'machine.key');
+    await fs.writeFile(shared, 'k');
+    await fs.writeFile(`${shared}.pub`, 'ssh-ed25519 AAAAmachine flipd-machine');
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app', '--key', shared], { paths: p, ...o, forgeOverride }), 0);
+    assert.ok(!f.seen.some((r) => r.method === 'POST' && r.path === '/repos/team/app/keys'), 'no key upload');
+    assert.equal(f.seen.filter((r) => r.method === 'POST' && r.path === '/repos/team/app/hooks').length, 1, 'exactly one webhook created');
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account: a failed conf write after the forge writes succeeded deletes the uploaded key and the generated pair', async () => {
+  if (process.getuid?.() === 0) return;   // root ignores mode bits; nothing to assert
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, []],
+    'POST /repos/team/app/keys': [201, { id: 5 }],
+    'POST /repos/team/app/hooks': [201, { id: 9 }],
+    'DELETE /repos/team/app/keys/5': [204, ''],
+  });
+  try {
+    await fs.chmod(p.reposDir, 0o500);
+    try {
+      const o = io();
+      assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
+      assert.match(o.err(), /nothing was written/);
+      assert.ok(f.seen.some((r) => r.method === 'DELETE' && r.path === '/repos/team/app/keys/5'), 'the uploaded key is deleted again');
+      noSecrets(o);
+    } finally {
+      await fs.chmod(p.reposDir, 0o755);
+    }
+    await assert.rejects(fs.stat(p.repoConf('app')));
+    await assert.rejects(fs.stat(p.repoDir('app')), 'the directory this run created is gone with its key pair');
+  } finally {
+    await f.close();
+  }
+});
+
 test('add: an account conf that exists but cannot be parsed stops add loudly instead of falling back to the manual path', async () => {
   const p = await makePrefix();
   await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
