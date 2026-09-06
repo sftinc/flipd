@@ -595,6 +595,32 @@ test('add with an account: a bug in the forge client (not a ForgeError, no .code
   }
 });
 
+test('add with an account: ensureKey failing after its mkdir (ssh-keygen missing) still removes the directory it created', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, []],
+  });
+  // ensureKey's own mkdir succeeds (there is nothing yet to stop it), then
+  // ssh-keygen itself fails to spawn — the property fix round 1 exists for:
+  // dirExisted has to be known before ensureKey runs, because this failure
+  // happens inside ensureKey, after its mkdir, before it returns anything.
+  const scratch = await tmpdir('rd-no-ssh-keygen');   // empty: no ssh-keygen on PATH
+  const prevPath = process.env.PATH;
+  try {
+    process.env.PATH = scratch;
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
+    assert.match(o.err(), /ENOENT|no such file/i);
+    assert.match(o.err(), /no repo config was written/);
+    await assert.rejects(fs.stat(p.repoDir('app')), 'the directory ensureKey created is gone even though the failure is inside ensureKey itself');
+    await assert.rejects(fs.stat(p.repoConf('app')));
+    noSecrets(o);
+  } finally {
+    process.env.PATH = prevPath;
+    await f.close();
+  }
+});
+
 test('add with an account: an SSH host that differs from the API host is named as a warning, with the ssh-keyscan command to record it', async () => {
   const { p, f, forgeOverride } = await accountSetup({
     'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@git.example.com:team/app.git' }],
