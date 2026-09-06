@@ -1,11 +1,16 @@
 # Items to steal from prior art
 
 **Status: todo, 2026-09-05.** Each item is something an existing project already
-solved, with the source named. Evidence and reasoning are in
-`docs/superpowers/research/2026-09-05-prior-art.md`; this file is the actionable list.
+solved, with the source named. This file is the actionable list; the evidence and
+reasoning behind it are in the prior-art research, which was retired from the tree
+once the build was done and is read from history:
 
-Nothing here is implemented. Sizes are estimates against the plan in
-`docs/superpowers/plans/2026-09-05-deployd.md`.
+    git show 3f493f0:docs/superpowers/research/2026-09-05-prior-art.md
+
+Nothing here is implemented. Sizes are estimates against the implementation plan,
+retired in the same commit and read the same way:
+
+    git show 3f493f0:docs/superpowers/plans/2026-09-05-remote-deploy.md
 
 ---
 
