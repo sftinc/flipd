@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makeSourceRepo, tmpdir } from './helpers.mjs';
-import { gitEnv, cloneBare, remoteUrl, setRemoteUrl, fetchBranch, changedFiles, worktreeAdd, worktreeRemove, worktreePrune, lsRemote, shortSha, isBareRepo, GitError } from '../lib/git.mjs';
+import { gitEnv, cloneBare, remoteUrl, setRemoteUrl, fetchBranch, changedFiles, worktreeAdd, worktreeRemove, worktreePrune, lsRemote, shortSha, isBareRepo, redactUserinfo, GitError } from '../lib/git.mjs';
 
 const opts = () => ({ env: gitEnv({ key: '/nonexistent/key', knownHosts: '/nonexistent/kh', home: '/tmp' }) });
 
@@ -71,6 +71,30 @@ test('a clone that fails leaves no bare directory behind', async () => {
   await assert.rejects(cloneBare('file:///nonexistent/repo', bare, opts()));
   assert.equal(await isBareRepo(bare), false);
   await assert.rejects(fs.stat(bare));
+});
+
+test('a failing command with a credential in the URL reports it redacted, not verbatim', async () => {
+  // Port 1 on loopback: refused immediately, so this is a real git failure with
+  // no network and no waiting. git redacts the credential in its own stderr;
+  // the point of this test is that gitOk does not put it back by quoting argv
+  // into the message that reaches the terminal, the attempt log and events.log.
+  await assert.rejects(
+    lsRemote('https://x-access-token:ghp_TOPSECRETTOKEN@127.0.0.1:1/o/r.git', 'main', opts()),
+    (e) => {
+      assert.ok(e instanceof GitError);
+      assert.ok(!e.message.includes('ghp_TOPSECRETTOKEN'), `the credential must not be in the message: ${e.message}`);
+      assert.ok(!e.stderr.includes('ghp_TOPSECRETTOKEN'), `nor in git's own stderr, which is logged too: ${e.stderr}`);
+      assert.match(e.message, /https:\/\/\*\*\*@127\.0\.0\.1:1\/o\/r\.git/, 'the URL is still named, minus its userinfo');
+      return true;
+    },
+  );
+});
+
+test('redactUserinfo strips both halves of a credential and leaves ordinary URLs alone', () => {
+  assert.equal(redactUserinfo('clone https://u:p@github.com/o/r.git x'), 'clone https://***@github.com/o/r.git x');
+  assert.equal(redactUserinfo('ssh://ghp_TOKEN@github.com/o/r.git'), 'ssh://***@github.com/o/r.git');
+  assert.equal(redactUserinfo('fetch file:///srv/r.git origin'), 'fetch file:///srv/r.git origin');
+  assert.equal(redactUserinfo('clone git@github.com:o/r.git'), 'clone git@github.com:o/r.git');
 });
 
 test('gitEnv pins the key and known_hosts and leaks nothing else', () => {

@@ -7,6 +7,7 @@ import { makePrefix, makeSourceRepo, writeRepoConf } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
 import { readState, writeState } from '../lib/state.mjs';
 import { runEntry, resolveRollbackTarget } from '../lib/run.mjs';
+import { gitEnv, setRemoteUrl } from '../lib/git.mjs';
 
 const MAIN = { listen: { host: '127.0.0.1', port: 0 }, publicHost: null, webhookSecret: 's', keep: 5, logKeep: 50, logMaxBytes: 52428800 };
 
@@ -414,6 +415,41 @@ test('a malformed env line is not echoed verbatim into the attempt log', async (
   const log = await fs.readFile((await t.state()).last.log, 'utf8');
   assert.ok(!log.includes('thisisasecretlookingvalue'));
   assert.match(log, /env file: line 1/);
+});
+
+test('a credential left in the clone\'s origin is redacted in every sink, not just the terminal', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  // A clone created before REPO refused credentials — or by hand — can still
+  // hold a token in its stored origin. The REPO-changed refusal names that
+  // origin, and that detail reaches the terminal, the attempt log, and
+  // events.log, the one log remote-deploy never prunes.
+  const gitDir = path.join(t.p.repoDir('r'), 'git');
+  const gopts = { env: gitEnv({ key: '/nonexistent/key', knownHosts: t.p.knownHosts, home: t.p.lib }) };
+  await setRemoteUrl(gitDir, 'https://x-access-token:ghp_TOPSECRETTOKEN@127.0.0.1:1/o/r.git', gopts);
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'fetch failed');
+  const log = await fs.readFile((await t.state()).last.log, 'utf8');
+  const ev = await t.events();
+  for (const [where, text] of [['the attempt log', log], ['events.log', ev]]) {
+    assert.ok(!text.includes('ghp_TOPSECRETTOKEN'), `the credential must not reach ${where}`);
+  }
+  assert.match(log, /clone has https:\/\/\*\*\*@127\.0\.0\.1:1\/o\/r\.git/);
+  assert.match(ev, /fetch-failed .*clone has https:\/\/\*\*\*@/);
+});
+
+test('a masked value in a fetch-failure detail is masked in events.log too, not only in the attempt log', async () => {
+  // events.log and the attempt log are two sinks for the same text, and only
+  // one of them used to mask. The detail for a fetch failure is git's own argv,
+  // which carries config values; when one of those is also an env-file value,
+  // both sinks have to mask it, through the same scrubber.
+  const t = await setup({ extra: { BRANCH: 'secretbranchvalue123' } });
+  await fs.writeFile(t.p.envFile('r', 'build'), 'TOK=secretbranchvalue123\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'fetch failed');
+  const ev = await t.events();
+  assert.match(ev, /fetch-failed .* fetch failed /);
+  assert.match(ev, /refs\/heads\/\*\*\*/, 'the detail is there, with the masked value replaced');
+  assert.ok(!ev.includes('secretbranchvalue123'), 'events.log is masked like the attempt log');
+  assert.ok(!(await fs.readFile((await t.state()).last.log, 'utf8')).includes('secretbranchvalue123'));
 });
 
 test('rollback to a release whose directory is missing fails cleanly without flipping current or setting pending', async () => {

@@ -17,6 +17,47 @@ test('parseKV: unknown key and malformed line name the line', () => {
   assert.throws(() => parseKV('nonsense', null), /line 1/);
 });
 
+test('parseKV: a malformed line is reported by number only, never by quoting the line', () => {
+  // The line that failed to parse is the one line no mask can cover: a file
+  // that did not parse contributes nothing to the attempt log's mask, and
+  // remote-deploy.conf's malformed line is the WEBHOOK_SECRET itself. This
+  // message reaches journald (through serve's startup), the operator's
+  // terminal, and the attempt log, so it must carry the number and nothing else.
+  for (const line of ['sk_live_TOPSECRET', '  "private_key": "sk_live_TOPSECRET",', 'hunter2']) {
+    assert.throws(() => parseKV(line, null), (e) => {
+      assert.ok(e instanceof ConfigError);
+      assert.equal(e.message, 'line 1: expected KEY=value');
+      assert.ok(!e.message.includes(line.trim()), `the offending line must not be echoed: ${e.message}`);
+      return true;
+    });
+  }
+});
+
+test('parseRepo: a REPO carrying credentials is refused, and the refusal never echoes the URL', () => {
+  const p = paths('/x');
+  const conf = (repo) => `REPO=${repo}\nBUILD=b\nDEPLOY=c\n`;
+  for (const bad of [
+    'https://x-access-token:ghp_TOPSECRETTOKEN@github.com/o/r.git',
+    'https://ghp_TOPSECRETTOKEN@github.com/o/r.git',
+    'ssh://git:ghp_TOPSECRETTOKEN@github.com/o/r.git',
+  ]) {
+    assert.throws(() => parseRepo('a', conf(bad), p), (e) => {
+      assert.ok(e instanceof ConfigError, `${bad} must be refused`);
+      assert.match(e.message, /credentials/);
+      // The whole point: the URL is in git's argv where `ps` can see it, so the
+      // refusal must not be the thing that also puts it in journald.
+      assert.ok(!e.message.includes('ghp_TOPSECRETTOKEN'), `the refusal must not echo the credential: ${e.message}`);
+      assert.ok(!e.message.includes(bad));
+      return true;
+    });
+  }
+  // The forms that carry no secret still load: the documented scp-style URL, a
+  // plain ssh:// username, and the file:// URLs the tests themselves use.
+  for (const good of ['git@github.com:o/r.git', 'ssh://git@github.com/o/r.git', 'file:///srv/repo.git', 'https://github.com/o/r.git']) {
+    assert.equal(parseRepo('a', conf(good), p).repo, good);
+  }
+});
+
 test('parseMain: defaults and validation', () => {
   const m = parseMain('WEBHOOK_SECRET=s\n');
   assert.deepEqual(m, { listen: { host: '127.0.0.1', port: 9000 }, publicHost: null, webhookSecret: 's', keep: 5, logKeep: 50, logMaxBytes: 52428800 });
