@@ -4,11 +4,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makePrefix, tmpdir, writeMain, writeRepoConf } from './helpers.mjs';
 import { parseKV, loadEnvFile } from '../lib/config.mjs';
-import add, { parseRepoUrl } from '../lib/cli/add.mjs';
+import add from '../lib/cli/add.mjs';
 import check from '../lib/cli/check.mjs';
 import env from '../lib/cli/env.mjs';
 import remove from '../lib/cli/remove.mjs';
 import { findRepoFor } from '../lib/serve.mjs';
+import { parseRepoUrl } from '../lib/repourl.mjs';
 
 function io() {
   let out = '', err = '';
@@ -16,8 +17,8 @@ function io() {
 }
 
 test('parseRepoUrl handles ssh and https forms', () => {
-  assert.deepEqual(parseRepoUrl('git@github.com:sftinc/aliasroute.git'), { owner: 'sftinc', repo: 'aliasroute', name: 'aliasroute' });
-  assert.deepEqual(parseRepoUrl('https://github.com/sftinc/Alias.Route'), { owner: 'sftinc', repo: 'Alias.Route', name: 'alias.route' });
+  assert.deepEqual(parseRepoUrl('git@github.com:sftinc/aliasroute.git'), { host: 'github.com', owner: 'sftinc', repo: 'aliasroute', name: 'aliasroute' });
+  assert.deepEqual(parseRepoUrl('https://github.com/sftinc/Alias.Route'), { host: 'github.com', owner: 'sftinc', repo: 'Alias.Route', name: 'alias.route' });
   assert.equal(parseRepoUrl('file:///tmp/x'), null);
 });
 
