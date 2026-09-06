@@ -225,7 +225,29 @@ systemctl is-active --quiet flipd || fail_started
 say "flipd.service is enabled and running"
 
 # 9. Caddy
+# `log` goes to stderr, which the Debian unit sends to journald, so
+# `journalctl -u caddy` shows every request to this site with its source IP,
+# method, URI and status. That is the only record of a request flipd never
+# receives -- a TLS failure, a 404 on the wrong path, a proxy that never
+# forwarded -- and on a first install it is how an operator confirms that
+# GitHub's ping arrived at all. Not `output file`: the unit's sandbox refuses
+# writes under /var/log/caddy even when caddy owns the directory.
+# The filter drops X-Hub-Signature-256 from the logged request headers. It is
+# an HMAC of the body under WEBHOOK_SECRET, so it is inside the never-print
+# rule, and Caddy's default header redaction (Cookie, Authorization) does not
+# know it. Without the body the value is not replayable -- except for the
+# installer's own ping, whose body is a fixed literal -- but "not exploitable
+# today" is not the standard; "never logged" is.
 CADDY_BLOCK="${HOST:-deploy.example.com} {
+    log {
+        output stderr
+        format filter {
+            wrap json
+            fields {
+                request>headers>X-Hub-Signature-256 delete
+            }
+        }
+    }
     handle /deploy {
         reverse_proxy 127.0.0.1:9000
     }
@@ -309,12 +331,6 @@ if [ -n "$HOST" ]; then
   fi
 fi
 
-cat <<EOF
-
-sudoers, for a DEPLOY command that needs root (one script, no password):
-  echo 'flipd ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/flipd
-  chmod 0440 /etc/sudoers.d/flipd
-EOF
 if [ -z "$HOST" ]; then
   cat <<EOF
 
@@ -325,4 +341,4 @@ EOF
 fi
 
 say ""
-say "next: sudo flipd add <git-url>"
+say "next: sudo flipd add <git-url>   (a DEPLOY that needs root: see README, Permissions)"

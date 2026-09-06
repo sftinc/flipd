@@ -205,3 +205,42 @@ test('unit file and logrotate say what the spec says', async () => {
   assert.match(lr, /monthly/);
   assert.match(lr, /rotate 12/);
 });
+
+test('install.sh does not print a paste-ready sudoers line; the README carries it', async () => {
+  const text = await fs.readFile('install.sh', 'utf8');
+  // The most security-sensitive suggestion in the tool was also the most
+  // repeated: printed on every run, including runs where nothing needed root.
+  // A paste-ready NOPASSWD line that appears every time stops being read.
+  assert.doesNotMatch(text, /NOPASSWD/, 'install.sh no longer prints a sudoers rule');
+  assert.doesNotMatch(text, /sudoers\.d/, 'install.sh no longer names the sudoers.d path');
+  const readme = await fs.readFile('README.md', 'utf8');
+  assert.match(readme, /NOPASSWD: \/usr\/local\/bin\/<your-adopt-script>/, 'the README carries the rule, scoped to one script');
+  assert.match(readme, /chmod 0440 \/etc\/sudoers\.d\/flipd/, 'and the mode that sudo requires of it');
+});
+
+test('install.sh: the Caddy site block logs every request to journald, not to a file', async () => {
+  const text = await fs.readFile('install.sh', 'utf8');
+  const start = text.indexOf('CADDY_BLOCK=');
+  assert.ok(start >= 0, 'the Caddy block heredoc exists');
+  const block = text.slice(start, text.indexOf('\n}"', start) + 3);
+  // A single endpoint with a handful of requests a day has no volume argument
+  // against logging all of them, and the site block is the only layer that
+  // sees a request flipd never receives -- a TLS failure, a 404 on the wrong
+  // path, a proxy misconfiguration. On the first real install, proving that
+  // GitHub's ping had arrived took adding this by hand.
+  assert.match(block, /^\s+log \{/m, 'a log directive');
+  assert.match(block, /^\s+output stderr$/m, 'writing to stderr, which the unit sends to journald');
+  // The signature header is an HMAC under WEBHOOK_SECRET and so inside the
+  // never-print rule; Caddy's default redaction set does not include it.
+  assert.match(block, /^\s+request>headers>X-Hub-Signature-256 delete$/m, 'the signature header is filtered out of the logged request');
+  const deleteIndex = block.indexOf('X-Hub-Signature-256 delete');
+  assert.ok(deleteIndex > block.indexOf('log {') && deleteIndex < block.indexOf('handle /deploy'), 'the filter is inside the log block');
+  // `output file /var/log/caddy/...` is refused by the Debian unit's sandbox
+  // with "permission denied" even when caddy owns the directory; observed.
+  assert.doesNotMatch(block, /output file/, 'never a file: the sandbox refuses it');
+  // The directive must be inside the site block, not at the top level of the
+  // Caddyfile, or it would apply to (and be ambiguous with) other sites.
+  const logIndex = block.indexOf('log {');
+  const handleIndex = block.indexOf('handle /deploy');
+  assert.ok(logIndex > 0 && logIndex < handleIndex, 'log is declared inside the site, before the handlers');
+});

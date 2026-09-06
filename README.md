@@ -11,12 +11,32 @@ and is read from history:
 
 ## Install (once per server)
 
+The box needs `git`, `node` 20 or newer, `ssh-keygen` and `curl`. The first
+three are checked up front, and the installer stops cleanly if one is missing.
+`curl` is also required, but is not checked beforehand; it is used partway
+through (GitHub's host keys, Caddy repo setup, and the signed ping), so a box
+without it gets a partial install and a raw shell `command not found` rather
+than a clean refusal. On Debian and Ubuntu, `apt install nodejs` does **not**
+include `npm` — that is a separate package, needed only if your `BUILD` command
+uses it (`apt install npm`). A `BUILD=npm test` on a box with `node` but no
+`npm` fails with exit 127 and `npm: not found` in the attempt log; the fix is
+upstream of flipd.
+
     git clone git@github.com:sftinc/flipd.git /opt/flipd
     sudo /opt/flipd/install.sh --host deploy.example.com
 
 `--host` needs a name that already points at the box; it installs Caddy, wires
 TLS, and checks the path with a signed ping. Without it, everything else
 happens and the Caddy block is printed to paste by hand.
+
+With `--host`, the site block lives at `/etc/caddy/conf.d/flipd.caddy` and
+logs every request to this site — source IP, method, path, status, and the
+request headers with `X-Hub-Signature-256` filtered out — to journald, so
+`journalctl -u caddy` is where to look when a webhook seems not to arrive.
+The `log` directive is inside the site block, so it covers this site only,
+not others on the same Caddy. The block is rewritten on each `--host` run, so
+hand edits there do not survive; and everything in `conf.d/` is imported, so
+a backup file left there defines the site twice and Caddy refuses the reload.
 
 Partway through its output, the installer prints a
 `sudo usermod -aG flipd <you>` line — run it (and start a fresh login
@@ -27,7 +47,8 @@ below without `sudo`. See [Permissions](#permissions).
 
     sudo flipd add git@github.com:you/app.git --root .
     # paste the deploy key and the webhook it prints (or run the deploy-key
-    # command and the webhook pipeline it prints)
+    # command and the webhook pipeline it prints). If you set --host after
+    # this, `flipd check app` prints the webhook recipe again with the real host.
     sudo vi /etc/flipd/repos/app.conf        # BUILD and DEPLOY
     flipd check app
 
@@ -76,13 +97,28 @@ root):
 If you see either of those but `systemctl status flipd` says the
 service is fine, it's almost always a missing group, not a dead service.
 
+### A DEPLOY command that needs root
+
+`DEPLOY` runs as the `flipd` user. If it must do something only root can —
+restart a system service, say — give `flipd` passwordless `sudo` for **one
+script and nothing else**, and put the privileged steps in that script:
+
+    echo 'flipd ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/flipd
+    chmod 0440 /etc/sudoers.d/flipd
+
+Then `DEPLOY=sudo /usr/local/bin/<your-adopt-script>`. Keep the script's path
+absolute and its contents root-owned and not group- or world-writable, or the
+rule grants root to whoever can edit it. The installer used to print this on
+every run; it lives here now so that it is read when it is needed rather than
+skimmed when it is not.
+
 ## Commands
 
 | Command | Sudo / group needed | Exit codes |
 |---|---|---|
 | `flipd serve` | run by systemd as `flipd` | runs until `SIGTERM`/`SIGINT` |
 | `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem; `2` usage |
-| `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)) |
+| `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the webhook recipe (Payload URL, secret location, `gh api` pipeline) with the current `PUBLIC_HOST`, so it can be read again after `--host` |
 | `flipd run <name>` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down |
 | `flipd rollback <name>` | group (or sudo) | same as `run`, printing `queued rollback of <name> to <sha>` or `not queued: <reason>` |
 | `flipd status [name]` | group (or sudo) | `0` printed (the activity column falls back to `service down` if the socket is merely unreachable); `1` no such repo / nothing configured, **or** a bare `EACCES` if you're not in the `flipd` group — see [Permissions](#permissions) |
