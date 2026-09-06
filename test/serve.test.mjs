@@ -322,6 +322,36 @@ test('findRepoFor: REPO matches ssh_url case-insensitively, so a lowercase conf 
   assert.equal(await find({ sshUrl: 'git@github.com:MyOrg/Other.git', branch: 'main', id: null }), null, 'case is the only thing forgiven');
 });
 
+test('findRepoFor: REPO and ssh_url match by identity — case, scp vs ssh:// with a port, .git and a trailing slash are all forgiven', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'scp', { REPO: 'git@forge.example.com:Team/App.git', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'plain', { REPO: 'file:///srv/git/other', BUILD: 'true', DEPLOY: 'true' });
+  const find = findRepoFor(p, () => {});
+  const q = (sshUrl) => find({ sshUrl, branch: 'main', id: null });
+  // Forgejo renders ssh_url as ssh://git@host:port/... when SSH is not on 22;
+  // the operator wrote the scp form. Same repository.
+  assert.equal((await q('ssh://git@forge.example.com:2222/team/app'))?.name, 'scp');
+  assert.equal((await q('GIT@FORGE.EXAMPLE.COM:team/app.git/'))?.name, 'scp');
+  assert.equal(await q('git@other.example.com:team/app.git'), null, 'a different host is a different repository');
+  assert.equal(await q('git@forge.example.com:team/app2.git'), null, 'a different repo is a different repository');
+  assert.equal((await q('file:///srv/git/OTHER'))?.name, 'plain', 'an unparsed URL still matches by lowercased string');
+  assert.equal(await q('file:///srv/git/other2'), null);
+});
+
+test('findRepoFor: the id fallback is scoped to the host, so equal ids on two forges cannot cross-match', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'gh', { REPO: 'git@github.com:o/app.git', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'fj', { REPO: 'git@forge.example.com:o/app.git', BUILD: 'true', DEPLOY: 'true' });
+  // Forgejo ids are small per-instance integers; a collision with another
+  // forge's id is ordinary, not a corner case.
+  await writeState(p.repoDir('gh'), { ...emptyState(), github_id: 12 });
+  await writeState(p.repoDir('fj'), { ...emptyState(), github_id: 12 });
+  const find = findRepoFor(p, () => {});
+  assert.equal((await find({ sshUrl: 'git@forge.example.com:o/renamed.git', branch: 'main', id: 12 }))?.name, 'fj');
+  assert.equal((await find({ sshUrl: 'git@github.com:o/renamed.git', branch: 'main', id: 12 }))?.name, 'gh');
+  assert.equal(await find({ sshUrl: 'git@third.example.com:o/renamed.git', branch: 'main', id: 12 }), null, 'same id, unknown host: no match');
+});
+
 test('shutdown journals a queued-but-not-yet-started entry that gets dropped', async () => {
   const p = await makePrefix();
   await writeMain(p);

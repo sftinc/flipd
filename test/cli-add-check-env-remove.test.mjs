@@ -63,16 +63,17 @@ test('add given the https form writes the ssh REPO a push can actually match', a
   const o = io();
   assert.equal(await add(['https://github.com/sftinc/Alias.Route', '--build', 'true', '--deploy', 'true'], { paths: p, ...o }), 0);
   const text = await fs.readFile(p.repoConf('alias.route'), 'utf8');
-  // GitHub's push payload carries repository.ssh_url, and lib/serve.mjs matches
-  // REPO against it for strict equality. The https URL is fine to type; it is
-  // not fine to store.
+  // GitHub's push payload carries repository.ssh_url. The https URL is fine
+  // to type; the scp form is what fetch needs, so it is what gets stored.
   assert.match(text, /^REPO=git@github\.com:sftinc\/Alias\.Route\.git$/m);
   // The property that actually matters, checked end to end rather than by
-  // pattern: the webhook matcher finds this repo for a push to it.
+  // pattern: the webhook matcher finds this repo for a push to it. The rewrite
+  // to the scp form is for fetch (the deploy key works over SSH), not for
+  // matching — since identity matching landed, the https form matches too.
   const find = findRepoFor(p, () => {});
   const matched = await find({ sshUrl: 'git@github.com:sftinc/Alias.Route.git', branch: 'main', id: null });
   assert.equal(matched?.name, 'alias.route', 'a push to this repository matches the config add just wrote');
-  assert.equal(await find({ sshUrl: 'https://github.com/sftinc/Alias.Route', branch: 'main', id: null }), null);
+  assert.equal((await find({ sshUrl: 'https://github.com/sftinc/Alias.Route', branch: 'main', id: null }))?.name, 'alias.route', 'same repository, different spelling');
 });
 
 test('add --key writes KEY, generates nothing, and prints the collaborator instruction', async () => {
