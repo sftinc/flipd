@@ -87,6 +87,21 @@ root):
 If you see either of those but `systemctl status flipd` says the
 service is fine, it's almost always a missing group, not a dead service.
 
+### A DEPLOY command that needs root
+
+`DEPLOY` runs as the `flipd` user. If it must do something only root can —
+restart a system service, say — give `flipd` passwordless `sudo` for **one
+script and nothing else**, and put the privileged steps in that script:
+
+    echo 'flipd ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/flipd
+    chmod 0440 /etc/sudoers.d/flipd
+
+Then `DEPLOY=sudo /usr/local/bin/<your-adopt-script>`. Keep the script's path
+absolute and its contents root-owned and not group- or world-writable, or the
+rule grants root to whoever can edit it. The installer used to print this on
+every run; it lives here now so that it is read when it is needed rather than
+skimmed when it is not.
+
 ## Commands
 
 | Command | Sudo / group needed | Exit codes |

@@ -309,12 +309,6 @@ if [ -n "$HOST" ]; then
   fi
 fi
 
-cat <<EOF
-
-sudoers, for a DEPLOY command that needs root (one script, no password):
-  echo 'flipd ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/flipd
-  chmod 0440 /etc/sudoers.d/flipd
-EOF
 if [ -z "$HOST" ]; then
   cat <<EOF
 
@@ -325,4 +319,4 @@ EOF
 fi
 
 say ""
-say "next: sudo flipd add <git-url>"
+say "next: sudo flipd add <git-url>   (a DEPLOY that needs root: see README, Permissions)"

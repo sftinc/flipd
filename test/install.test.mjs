@@ -205,3 +205,15 @@ test('unit file and logrotate say what the spec says', async () => {
   assert.match(lr, /monthly/);
   assert.match(lr, /rotate 12/);
 });
+
+test('install.sh does not print a paste-ready sudoers line; the README carries it', async () => {
+  const text = await fs.readFile('install.sh', 'utf8');
+  // The most security-sensitive suggestion in the tool was also the most
+  // repeated: printed on every run, including runs where nothing needed root.
+  // A paste-ready NOPASSWD line that appears every time stops being read.
+  assert.doesNotMatch(text, /NOPASSWD/, 'install.sh no longer prints a sudoers rule');
+  assert.doesNotMatch(text, /sudoers\.d/, 'install.sh no longer names the sudoers.d path');
+  const readme = await fs.readFile('README.md', 'utf8');
+  assert.match(readme, /NOPASSWD: \/usr\/local\/bin\/<your-adopt-script>/, 'the README carries the rule, scoped to one script');
+  assert.match(readme, /chmod 0440 \/etc\/sudoers\.d\/flipd/, 'and the mode that sudo requires of it');
+});
