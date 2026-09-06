@@ -150,9 +150,11 @@ install -d -m 0755 /etc/logrotate.d
 install -m 0644 "$HERE/flipd.logrotate" /etc/logrotate.d/flipd
 
 # The socket at /run/flipd/flipd.sock and /var/log/flipd
-# are root:flipd on purpose (that is the entire access control for
+# are group-owned by flipd on purpose (that is the entire access control for
 # run/rollback/check, and for log) -- so any admin account other than root
-# needs group membership to use flipd without sudo. Printed here,
+# needs group membership to use flipd without sudo. Both are owned
+# flipd:flipd, unlike /etc/flipd/flipd.conf, which is root:flipd so that the
+# service can read the secret but not rewrite it. Printed here,
 # before both the service-liveness gate and the Caddy section below -- either
 # can still abort under `set -e` for reasons that have nothing to do with
 # flipd itself (a bad hand-written conf, or a pre-existing Caddyfile
