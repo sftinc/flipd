@@ -79,6 +79,9 @@ To catch a lost webhook and deploy anyway:
     flipd check app >/dev/null; [ $? -eq 4 ] && flipd run app
 
 `run` is a forced build, so a catch-up ignores `WATCH` and `IGNORE`.
+Exit `4` also covers a `pending` release that was flipped to but never
+confirmed, so an unattended catch-up rebuilds over it and the failed deploy
+is never looked at. If that matters on a repo, check `flipd status` first.
 
 ## Where things live
 
@@ -97,7 +100,7 @@ For a repo named `app`:
 | `/var/lib/flipd/app/current` | a symlink to the release most recently flipped to, confirmed or not |
 | `/var/lib/flipd/app/state.json` | which release is live, previous and pending |
 | `/var/log/flipd/app/<id>.log` | one attempt log per build or rollback |
-| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries GitHub's delivery id, so a delivery in the repository's webhook log can be found here with `grep` |
+| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries GitHub's delivery id, so a delivery that matched a repo can be found here with `grep` |
 
 flipd writes nowhere else. Getting the release to wherever it is served from
 is `DEPLOY`'s job: see [docs/deploy-recipes.md](docs/deploy-recipes.md).
@@ -115,7 +118,7 @@ logged to journald and skipped, and the other repos are unaffected. `REPO`,
 
 | Key | Default | Meaning |
 |---|---|---|
-| `REPO` | required | The URL to fetch. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git`, because a push is matched to a repo by comparing this value to the payload's `ssh_url`, case-insensitively. A repository renamed on GitHub is matched by its numeric id once one webhook run has recorded it, and the attempt log says to update `REPO`. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
+| `REPO` | required | The URL to fetch. `add` rewrites a GitHub `https://` URL to `git@github.com:owner/repo.git`, because a push is matched to a repo by comparing this value to the payload's `ssh_url`, case-insensitively. A repository renamed on GitHub is matched by its numeric id once one webhook run has recorded it, and `events.log` says to update `REPO`. A URL carrying `user:password@` or `token@` is refused; use the deploy key. |
 | `BRANCH` | `main` | The branch to follow. A push to any other branch is answered `ignored`. |
 | `ROOT` | `.` | The directory inside the checkout that `BUILD` and `DEPLOY` run in. Relative, no `..`. It does not change where flipd puts files. |
 | `BUILD` | required | Run by `/bin/sh -c` in the fresh checkout. A non-zero exit is `build failed`: nothing is flipped and the live release is untouched. |
