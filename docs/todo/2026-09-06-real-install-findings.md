@@ -1,8 +1,10 @@
-# Found in the field
+# Gaps found by installing and running flipd on a real server
 
-**Status: todo, opened 2026-09-06.** Items here come from running flipd on a real
-box, not from reading other projects. Each one names the install that produced it,
-so a reader can tell evidence from speculation.
+**Status: todo, opened 2026-09-06.** Every item here was produced by installing flipd
+on a live box and using it, not by reading other projects. Each names the install that
+surfaced it, so a reader can tell observed evidence from speculation. Most are about
+what the running system fails to tell its operator, rather than what it computes
+wrongly -- the class of defect a test suite does not reach.
 
 The prior-art list is separate: `docs/todo/2026-09-05-borrowed-from-prior-art.md`.
 
