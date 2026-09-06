@@ -229,13 +229,19 @@ test('shutdown mid-build is interrupted with current untouched; stale current.tm
 });
 
 test('an env file cannot replace PATH or a DEPLOY_* variable', async () => {
-  const t = await setup({ build: 'echo "$PATH|$DEPLOY_NAME|$MINE" > build.out' });
-  await fs.writeFile(t.p.envFile('r', 'build'), 'PATH=/evil\nDEPLOY_NAME=x\nMINE=ok\n');
+  const t = await setup({ build: 'echo "$PATH|$DEPLOY_NAME|$MINE|$DEPLOY_FUTURE" > build.out' });
+  // DEPLOY_FUTURE is the whole point of the prefix rule: the spec forbids an env
+  // file setting *any* name beginning DEPLOY_, "whether or not remote-deploy uses
+  // it today", so that a variable added in a later version cannot be one an env
+  // file has already been silently supplying. Object.hasOwn covers only the
+  // eight names set today, so without the startsWith arm this line is the only
+  // thing that fails.
+  await fs.writeFile(t.p.envFile('r', 'build'), 'PATH=/evil\nDEPLOY_NAME=x\nMINE=ok\nDEPLOY_FUTURE=x\n');
   await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
   const s = await t.state();
   const out = (await fs.readFile(path.join(t.p.repoDir('r'), 'releases', s.live, 'build.out'), 'utf8')).trim();
-  assert.equal(out, '/usr/local/bin:/usr/bin:/bin|r|ok');
-  assert.match(await fs.readFile(s.last.log, 'utf8'), /refused PATH DEPLOY_NAME/);
+  assert.equal(out, '/usr/local/bin:/usr/bin:/bin|r|ok|', 'DEPLOY_FUTURE never reaches the command');
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /refused PATH DEPLOY_NAME DEPLOY_FUTURE/);
 });
 
 test('a malformed deploy env file after the flip is a deploy failure with the rollback line', async () => {
@@ -247,6 +253,28 @@ test('a malformed deploy env file after the flip is a deploy failure with the ro
   const s = await t.state();
   assert.ok(s.pending);
   assert.match(await fs.readFile(s.last.log, 'utf8'), /next: remote-deploy rollback r/);
+});
+
+test('a confirmed deploy is final on disk the instant it is confirmed, not merely by the time runEntry returns', async () => {
+  // The truthful-`interrupted` promise: startup reads a null last.finished as
+  // "the service died inside this attempt", so a crash between DEPLOY exiting
+  // zero and close() must not be able to relabel a confirmed deploy as
+  // interrupted. That requires the confirmation and the finalisation of `last`
+  // to be one write, which nothing tested — moving them apart killed no test.
+  // prune is the first thing that happens after deploy() returns, so its call to
+  // ctx.protectedTargets is the earliest observable moment after the
+  // confirmation; reading state.json there reads what a crash at that instant
+  // would leave behind.
+  const t = await setup();
+  let atConfirm = null;
+  t.ctx.protectedTargets = () => { atConfirm ??= readState(t.p.repoDir('r')); return { targets: [], reserved: false }; };
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const snap = await atConfirm;
+  assert.ok(snap, 'prune ran, so the snapshot was taken');
+  assert.equal(snap.pending, null, 'pending is cleared in that same write');
+  assert.ok(snap.live, 'live names the confirmed release');
+  assert.equal(snap.last.outcome, 'ok');
+  assert.ok(snap.last.finished, 'last.finished is already non-null: a crash here reads as ok, not as interrupted');
 });
 
 test('state.last is on disk from the moment an attempt opens', async () => {
@@ -415,6 +443,22 @@ test('a malformed env line is not echoed verbatim into the attempt log', async (
   const log = await fs.readFile((await t.state()).last.log, 'utf8');
   assert.ok(!log.includes('thisisasecretlookingvalue'));
   assert.match(log, /env file: line 1/);
+});
+
+test('the run path bounds its git calls: a fetch that outlives the timeout is a fetch failure, not a hung queue', async () => {
+  // Until this, gitOpts carried no timeoutMs at all, so git() ran with no timer:
+  // a stalled fetch never settled, runEntry never returned, and every other repo
+  // starved behind a queue slot that could only be cleared by a restart. One
+  // millisecond stands in for the ten-minute production cap; no real clone,
+  // however small, beats a timer armed before the process is even spawned.
+  const t = await setup();
+  t.ctx.gitTimeoutMs = 1;
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'fetch failed');
+  assert.match(await fs.readFile((await t.state()).last.log, 'utf8'), /timed out after 1ms/);
+  // And it is a bounded failure, not a wedge: with the cap back to normal the
+  // very next attempt succeeds.
+  t.ctx.gitTimeoutMs = undefined;
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'ok');
 });
 
 test('a credential left in the clone\'s origin is redacted in every sink, not just the terminal', async () => {
