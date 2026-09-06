@@ -218,6 +218,35 @@ test('install.sh does not print a paste-ready sudoers line; the README carries i
   assert.match(readme, /chmod 0440 \/etc\/sudoers\.d\/flipd/, 'and the mode that sudo requires of it');
 });
 
+// Returns the text of the brace-delimited block that `opener` starts, from the
+// opening `{` to its matching `}`. Used to assert nesting rather than mere
+// ordering: two directives can appear in the right order and still be siblings.
+function spanOf(text, opener) {
+  const start = text.indexOf(opener);
+  if (start < 0) return '';
+  let depth = 0;
+  for (let i = start + opener.length - 1; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return text.slice(start, i + 1);
+  }
+  return '';
+}
+
+test('spanOf finds a nested block and distinguishes it from a sibling', () => {
+  const nested = 'site {\n  log {\n    output stderr\n    format filter {\n      f delete\n    }\n  }\n  handle {\n  }\n}';
+  const sibling = 'site {\n  log {\n    output stderr\n  }\n  format filter {\n    f delete\n  }\n  handle {\n  }\n}';
+  // The ordering check the real assertion replaces passes on BOTH of these --
+  // that is the bug in it. The nesting check must separate them.
+  for (const t of [nested, sibling]) {
+    const d = t.indexOf('f delete');
+    assert.ok(d > t.indexOf('log {') && d < t.indexOf('handle {'), 'ordering alone cannot tell these apart');
+  }
+  assert.ok(spanOf(nested, 'log {').includes('f delete'), 'nested: the filter is inside the log block');
+  assert.ok(!spanOf(sibling, 'log {').includes('f delete'), 'sibling: the filter is not inside the log block');
+  assert.equal(spanOf('a { b }', 'zz {'), '', 'a missing opener yields empty, not a throw');
+  assert.equal(spanOf('log { unclosed', 'log {'), '', 'an unbalanced block yields empty, not a hang');
+});
+
 test('install.sh: the Caddy site block logs every request to journald, not to a file', async () => {
   const text = await fs.readFile('install.sh', 'utf8');
   const start = text.indexOf('CADDY_BLOCK=');
@@ -233,8 +262,12 @@ test('install.sh: the Caddy site block logs every request to journald, not to a 
   // The signature header is an HMAC under WEBHOOK_SECRET and so inside the
   // never-print rule; Caddy's default redaction set does not include it.
   assert.match(block, /^\s+request>headers>X-Hub-Signature-256 delete$/m, 'the signature header is filtered out of the logged request');
-  const deleteIndex = block.indexOf('X-Hub-Signature-256 delete');
-  assert.ok(deleteIndex > block.indexOf('log {') && deleteIndex < block.indexOf('handle /deploy'), 'the filter is inside the log block');
+  // Nesting, not ordering. The obvious check -- delete-line sits between
+  // `log {` and `handle /deploy` -- also passes when the filter has been moved
+  // out of the log block to sit beside it, which is precisely the regression
+  // worth catching. Scan brace depth from `log {` to find where that block
+  // actually ends, and require the delete line inside it.
+  assert.ok(spanOf(block, 'log {').includes('X-Hub-Signature-256 delete'), 'the filter is nested inside the log block, not merely before the handlers');
   // `output file /var/log/caddy/...` is refused by the Debian unit's sandbox
   // with "permission denied" even when caddy owns the directory; observed.
   assert.doesNotMatch(block, /output file/, 'never a file: the sandbox refuses it');

@@ -394,3 +394,49 @@ test('shutdown waits, bounded, for a still-running deferred ON_FAILURE notificat
   // leaves nothing running behind it.
   await waitFor(async () => { try { await fs.stat(marker); return true; } catch { return false; } });
 });
+
+test('a forged newline in pusher or ssh_url cannot forge an events.log or journal line', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    const sign = (b) => 'sha256=' + createHmac('sha256', 'testsecret').update(b).digest('hex');
+
+    // `pusher` is whatever GitHub relays from the payload. A signature proves
+    // the sender holds the secret; it does not make the field safe to write to
+    // a log. A newline here would append a second, fabricated events.log line.
+    const evil = 'w\n2026-01-01T00:00:00.000Z ok FORGED-EVENT everything is fine';
+    const body = JSON.stringify({ ref: 'refs/heads/main', after: 'b'.repeat(40), pusher: { name: evil }, repository: { ssh_url: src.url, id: 4242 } });
+    assert.equal((await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sign(body), 'x-github-event': 'push' } })).status, 202);
+    await waitIdle(p);
+
+    // The property is not that the text disappears -- seeing what was actually
+    // sent is the point of a log -- but that it cannot become a *line*. Every
+    // events.log line must still begin with a timestamp, so a reader (or a
+    // future parser) can never mistake payload text for a record flipd wrote.
+    const ev = await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
+    for (const l of ev.trim().split('\n')) {
+      assert.match(l, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z \S/, `every events.log line starts with a timestamp: ${l}`);
+    }
+    assert.ok(/webhook b{40} w\?/.test(ev), 'the pusher is recorded, with the newline neutralised to a visible marker');
+
+    // Same field, same hazard, the other sink: the rename path journals the
+    // pushed ssh_url and writes it to events.log.
+    const renamed = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/n.git\nFORGED-JOURNAL rest of line', id: 4242 } });
+    await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body: renamed, headers: { 'x-hub-signature-256': sign(renamed), 'x-github-event': 'push' } });
+    await waitIdle(p);
+
+    for (const l of lines) assert.ok(!l.includes('\n'), `no journal line contains a newline: ${JSON.stringify(l)}`);
+    assert.ok(lines.some((l) => /git@github\.com:o\/n\.git\?FORGED-JOURNAL/.test(l)), 'the url is still logged, on one line, with the newline neutralised');
+    const ev2 = await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
+    for (const l of ev2.trim().split('\n')) {
+      assert.match(l, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z \S/, `still one timestamped line each: ${l}`);
+    }
+  } finally {
+    await svc.close();
+  }
+});
