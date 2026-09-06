@@ -44,6 +44,7 @@ test('first run: fetch, build, flip, deploy, state ok', async () => {
   assert.equal((await fs.readFile(path.join(rel, 'deployed.marker'), 'utf8')).trim(), 'deployed');
   const log = await fs.readFile(s.last.log, 'utf8');
   assert.match(log, /outcome: ok/);
+  assert.doesNotMatch(log, /submodules:/, 'a repo without .gitmodules gets no submodule line');
   assert.match(await t.events(), /finished .* ok /);
 });
 
@@ -613,4 +614,42 @@ test('rollback to a release whose directory is missing fails cleanly without fli
   assert.equal(s.pending, null, 'no dangling pending');
   assert.equal(await t.current(), later, 'current was never flipped to the missing release');
   await assert.rejects(fs.lstat(path.join(t.p.repoDir('r'), 'current.tmp')), 'no stray tmp symlink left behind');
+});
+
+test('a checkout with .gitmodules initialises submodules over the same key; the log says so', async () => {
+  const t = await setup();
+  const sub = await makeSourceRepo();
+  await sub.commit({ 'inside.txt': 'from the submodule' });
+  // git >= 2.38.1 refuses file:// transport inside submodule recursion unless
+  // protocol.file.allow=always. The source repo's own `submodule add` is told
+  // on the command line. flipd's `submodule update` reads $HOME/.gitconfig,
+  // and gitEnv sets HOME to p.lib, so the test writes the setting there — no
+  // seam in the service.
+  await t.src.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub.url, 'sub');
+  await t.src.commit({}, 'add submodule');
+  await fs.writeFile(path.join(t.p.lib, '.gitconfig'), '[protocol "file"]\n\tallow = always\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const s = await t.state();
+  const rel = path.join(t.p.repoDir('r'), 'releases', s.live);
+  assert.equal(await fs.readFile(path.join(rel, 'sub', 'inside.txt'), 'utf8'), 'from the submodule');
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /submodules: \.gitmodules present/);
+});
+
+test('a submodule that cannot be fetched is checkout failed, with live and current untouched', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });   // a live release to protect
+  const first = (await t.state()).live;
+  const sub = await makeSourceRepo();
+  await sub.commit({ 'inside.txt': 'x' });
+  await t.src.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub.url, 'sub');
+  await t.src.commit({}, 'add submodule');
+  await fs.rm(sub.dir, { recursive: true, force: true });   // .gitmodules now points at nothing
+  await fs.writeFile(path.join(t.p.lib, '.gitconfig'), '[protocol "file"]\n\tallow = always\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'checkout failed');
+  const s = await t.state();
+  assert.equal(s.live, first);
+  assert.equal(s.pending, null);
+  assert.equal(await t.current(), first);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /outcome: checkout failed/);
+  assert.match(await t.events(), /finished .* checkout failed/);
 });
