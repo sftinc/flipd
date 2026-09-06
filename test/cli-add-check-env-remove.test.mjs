@@ -422,6 +422,7 @@ test('add with an account: looks the repo up, uploads the key, creates the webho
     assert.match(o.out(), /webhook added\s+https:\/\/deploy\.example\.com\/deploy \(id 9, push only\)/);
     assert.match(o.out(), /flipd check app/);
     assert.ok(!o.out().includes('gh api') && !o.out().includes(pub), 'no recipe and no key dump on the automated path');
+    assert.ok(!o.out().includes('ssh-keyscan'), 'the ssh host (forge.example.com) matches the account host: no mismatch warning');
     noSecrets(o);
     assert.equal(await add(['https://forge.example.com/Team/App'], { paths: p, ...io(), forgeOverride }), 1, 'refuses twice, as always');
   } finally {
@@ -476,17 +477,19 @@ test('add with an account: a failed webhook call deletes the uploaded key and th
     assert.ok(f.seen.some((r) => r.method === 'DELETE' && r.path === '/repos/team/app/keys/5'), 'the uploaded key is deleted again');
     await assert.rejects(fs.stat(p.repoConf('app')));
     await assert.rejects(fs.stat(p.repoDir('app')), 'the directory this run created is gone with its key pair');
+    noSecrets(o);
     // The forge cannot delete the key: the output says what to delete by hand.
     script['DELETE /repos/team/app/keys/5'] = [403, { message: 'nope' }];
     const o2 = io();
     assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o2, forgeOverride }), 1);
     assert.match(o2.err(), /delete the deploy key "flipd@\S+" \(id 5\)/);
+    noSecrets(o2);
     // Fix the cause: the retry succeeds from scratch.
     script['POST /repos/team/app/hooks'] = [201, { id: 9 }];
     const o3 = io();
     assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o3, forgeOverride }), 0);
     await fs.stat(p.repoConf('app'));
-    noSecrets(o);
+    noSecrets(o3);
   } finally {
     await f.close();
   }
@@ -586,6 +589,121 @@ test('add with an account: a bug in the forge client (not a ForgeError, no .code
     assert.ok(f.seen.some((r) => r.method === 'DELETE' && r.path === '/repos/team/app/keys/5'), 'the uploaded key is deleted again even though the error surfaces');
     await assert.rejects(fs.stat(p.repoConf('app')));
     await assert.rejects(fs.stat(p.repoDir('app')));
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account: an SSH host that differs from the API host is named as a warning, with the ssh-keyscan command to record it', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@git.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, []],
+    'POST /repos/team/app/keys': [201, { id: 5 }],
+    'POST /repos/team/app/hooks': [201, { id: 9 }],
+  });
+  try {
+    const o = io();
+    // git.example.com, not forge.example.com (the account host, and the URL's
+    // own host): a forge's SSH_DOMAIN setting can do exactly this.
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 0);
+    assert.match(o.out(), /ssh host\s+git\.example\.com is not forge\.example\.com/);
+    assert.match(o.out(), new RegExp(`ssh-keyscan git\\.example\\.com >> ${p.knownHosts.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    // No scan is run on the operator's behalf — a fingerprint has to be
+    // compared by a person, which is the whole point of the step.
+    assert.ok(!f.seen.some((r) => r.path.includes('keyscan')), 'add never calls out for a key itself');
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account: a malformed flipd.conf is reported by name and message, not the install.sh placeholder', async () => {
+  const p = await makePrefix();
+  await fs.writeFile(p.mainConf, 'LISTEN=127.0.0.1:0\n');   // no WEBHOOK_SECRET: parseMain refuses to load it
+  await writeAccountConf(p, 'forge.example.com', { KIND: 'forgejo', TOKEN: 'tokVALUE' });
+  const f = await fakeForge({});
+  const forgeOverride = (c) => createForge({ ...c, api: f.api });
+  try {
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
+    assert.match(o.err(), new RegExp(p.mainConf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(o.err(), /WEBHOOK_SECRET is required/);
+    assert.ok(!o.err().includes('install.sh'), 'a parse error in flipd.conf is not the missing-installer message');
+    assert.equal(f.seen.length, 0, 'refused before any forge request');
+    await assert.rejects(fs.stat(p.repoConf('app')));
+    await assert.rejects(fs.stat(p.repoDir('app')));
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account: no flipd.conf at all still reports PUBLIC_HOST is not set, the installer-not-run-yet case', async () => {
+  const p = await makePrefix();
+  await writeAccountConf(p, 'forge.example.com', { KIND: 'forgejo', TOKEN: 'tokVALUE' });
+  const f = await fakeForge({});
+  const forgeOverride = (c) => createForge({ ...c, api: f.api });
+  try {
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
+    assert.match(o.err(), /PUBLIC_HOST is not set/);
+    assert.match(o.err(), /install\.sh/);
+    assert.equal(f.seen.length, 0, 'refused before any forge request');
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add refuses a URL carrying credentials in its userinfo, before creating anything, and never echoes it', async () => {
+  const p = await makePrefix();
+  await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
+  const o = io();
+  assert.equal(await add(['https://user:s3cr3t-token@forge.example.com/o/r'], { paths: p, ...o }), 1);
+  assert.match(o.err(), /credentials in the URL/);
+  assert.ok(!o.err().includes('s3cr3t-token') && !o.err().includes('forge.example.com/o/r'), 'the URL itself is never echoed back');
+  await assert.rejects(fs.stat(p.repoConf('r')));
+  await assert.rejects(fs.stat(p.repoDir('r')));
+});
+
+test('add with an account: an existing hook is matched despite a trailing slash and a differently-cased host, so no duplicate is created', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'git@forge.example.com:team/app.git' }],
+    'GET /repos/team/app/hooks': [200, [{ id: 3, config: { url: 'https://Deploy.Example.com/deploy/' } }]],
+    'POST /repos/team/app/keys': [201, { id: 5 }],
+  });
+  try {
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 0);
+    assert.ok(!f.seen.some((r) => r.method === 'POST' && r.path === '/repos/team/app/hooks'), 'no duplicate hook is created for the differently-spelled match');
+    assert.match(o.out(), /webhook present\s+https:\/\/deploy\.example\.com\/deploy \(id 3\)/);
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add with an account of KIND github: the GitHub request shapes reach the fake through the real client', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/o/r': [200, { id: 1, ssh_url: 'git@github.com:o/r.git' }],
+    'GET /repos/o/r/hooks': [200, []],
+    'POST /repos/o/r/keys': [201, { id: 5 }],
+    'POST /repos/o/r/hooks': [201, { id: 9 }],
+  }, { KIND: 'github', TOKEN: 'ghTOKENvalue' });
+  try {
+    // The account is keyed by forge.example.com regardless of KIND (KIND only
+    // selects the request shapes createForge builds); the URL still names the
+    // host the account conf was written under.
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/o/r'], { paths: p, ...o, forgeOverride }), 0);
+    const keyReq = f.seen.find((r) => r.method === 'POST' && r.path === '/repos/o/r/keys');
+    assert.equal(keyReq.headers.authorization, 'Bearer ghTOKENvalue', 'GitHub auth, not the Gitea-family "token" scheme');
+    assert.equal(keyReq.headers.accept, 'application/vnd.github+json');
+    assert.equal(keyReq.headers['x-github-api-version'], '2022-11-28');
+    const hookReq = f.seen.find((r) => r.method === 'POST' && r.path === '/repos/o/r/hooks');
+    assert.deepEqual(hookReq.body, { name: 'web', active: true, events: ['push'], config: { url: 'https://deploy.example.com/deploy', content_type: 'json', secret: 'testsecret' } });
+    assert.match(await fs.readFile(p.repoConf('r'), 'utf8'), /^REPO=git@github\.com:o\/r\.git$/m);
     noSecrets(o);
   } finally {
     await f.close();

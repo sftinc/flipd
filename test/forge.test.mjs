@@ -94,3 +94,37 @@ test('createForge: a hanging API times out as a ForgeError', async () => {
     await new Promise((r) => server.close(r));
   }
 });
+
+test('createForge: addDeployKey and addHook throw when the response carries no id, rather than an id of undefined', async () => {
+  const f = await fakeForge({
+    'POST /repos/o/r/keys': [201, ''],
+    'POST /repos/o/r/hooks': [201, ''],
+  });
+  try {
+    const c = createForge({ kind: 'github', api: f.api, token: 'tok' });
+    // An id of undefined would otherwise pass a caller's `id !== null` check
+    // and end up as "DELETE .../keys/undefined" or "(id undefined)" in output
+    // — a ForgeError here removes that null-versus-undefined distinction
+    // entirely rather than requiring every caller to make it.
+    await assert.rejects(c.addDeployKey('o', 'r', { title: 't', key: 'k' }), (e) => e instanceof ForgeError && e.status === null && /no id/.test(e.message));
+    await assert.rejects(c.addHook('o', 'r', HOOK), (e) => e instanceof ForgeError && e.status === null && /no id/.test(e.message));
+  } finally {
+    await f.close();
+  }
+});
+
+test('createForge: a cross-origin redirect is refused, not followed with the Authorization header intact', async () => {
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => {
+    res.writeHead(302, { Location: 'https://attacker.example/steal' });
+    res.end();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    const c = createForge({ kind: 'github', api: `http://127.0.0.1:${server.address().port}`, token: 'SECRETTOKEN' });
+    await assert.rejects(c.getRepo('o', 'r'), (e) => e instanceof ForgeError && !String(e).includes('SECRETTOKEN'));
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((r) => server.close(r));
+  }
+});

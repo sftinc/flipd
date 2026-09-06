@@ -27,11 +27,18 @@ deploy key), `env` (edits an env file), `remove` (deletes a conf), `account`
 (writes an account). `add` is also the one command that talks to a forge's
 API: when `/etc/flipd/accounts/<host>.conf` exists for the URL's host it uploads
 the key and creates the webhook itself (`lib/forge.mjs`). A later failure
-undoes the uploaded key and the local key files it generated, but leaves a
-webhook it created in place — named in the failure output — because a
-leftover hook has no secret to leak and the next `add` finds and reuses it by
-URL, while a re-uploaded key would be rejected as a duplicate; otherwise it
-prints the recipe as before.
+undoes the uploaded key, the local key files it generated, and the conf if it
+got as far as being written, but leaves a webhook it created in place — named
+in the failure output — because a leftover hook has no secret to leak and the
+next `add` finds and reuses it by URL, while a re-uploaded key would be
+rejected as a duplicate; otherwise it prints the recipe as before. A URL
+carrying a credential in its userinfo is refused before anything is written,
+on both paths — the same rule `parseRepo` holds `REPO` to when a conf is read
+back (`credentialInUrl` in `lib/config.mjs`). On the forge path, a `ssh_url`
+whose host differs from the account's (a forge's own SSH_DOMAIN setting can
+do this) is not fetchable with the host key `account add` scanned, so `add`
+names it and prints the `ssh-keyscan` command to record it — it never scans
+that host itself; a fingerprint has to be compared by a person.
 
 ## Testing without a service
 
