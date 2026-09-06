@@ -2,7 +2,7 @@
 // bin/flipd
 import { paths } from '../lib/paths.mjs';
 
-const COMMANDS = ['serve', 'add', 'check', 'run', 'rollback', 'status', 'log', 'env', 'remove'];
+const COMMANDS = ['serve', 'add', 'check', 'run', 'rollback', 'status', 'log', 'env', 'remove', 'account'];
 const USAGE = `usage: flipd <command> [args]
 
   serve                              run the service (systemd does this)
@@ -14,6 +14,8 @@ const USAGE = `usage: flipd <command> [args]
   log <name> [--follow]              print or tail the latest attempt log
   env <name> build|deploy [--set K=V] [--unset K]
   remove <name>                      delete the repo's config file
+  account add <host> --kind github|forgejo|gitea [--api URL] [--ssh-port N]  < token-file
+  account list | account remove <host>
 `;
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -24,7 +26,7 @@ if (!cmd || cmd === '--help' || cmd === '-h' || !COMMANDS.includes(cmd)) {
 const mod = await import(`../lib/cli/${cmd}.mjs`);
 let code;
 try {
-  code = await mod.default(args, { paths: paths(), stdout: process.stdout, stderr: process.stderr });
+  code = await mod.default(args, { paths: paths(), stdout: process.stdout, stderr: process.stderr, stdin: process.stdin });
 } catch (e) {
   // A bad name, a missing config, a refused socket: one line, not a stack.
   process.stderr.write(`${e.code === 'ENOENT' ? `not found: ${e.path}` : e.message}\n`);
