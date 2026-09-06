@@ -23,7 +23,7 @@ The prior-art list is separate: `docs/todo/2026-09-05-borrowed-from-prior-art.md
 
 ## Open
 
-### [ ] 1 · Log every post-verification arm of the webhook handler
+### [x] 1 · Log every post-verification arm of the webhook handler
 
 **From:** this install. The webhook was registered by hand and the obvious next
 question -- "did it arrive?" -- could not be answered from the server at all. It had:
@@ -71,9 +71,11 @@ The signature header is derived from the secret and must never be logged.
 
 **Size:** six one-line journal calls, one small sanitiser, one test per arm.
 
+**Done:** 03a2572. All six arms plus the pre-existing no-match arm; `cleanForLog` bounds and strips every wire value.
+
 ---
 
-### [ ] 2 · Say that `install.sh` does not install Node
+### [x] 2 · Say that `install.sh` does not install Node
 
 **From:** this install. `apt-get install nodejs` on Ubuntu does not pull `npm`, so a
 `BUILD=npm test` failed with exit 127 and `/bin/sh: 1: npm: not found` on an otherwise
@@ -94,9 +96,11 @@ a separate package from `nodejs`, needed only if a BUILD command uses it.
 
 **Size:** a few lines of README.
 
+**Done:** 06f95fc. The first draft repeated this document's own error and said the installer checks `curl`; it does not, and the text now separates the three it guards from the one it does not.
+
 ---
 
-### [ ] 3 · Reconsider the sudoers hint printed on every install
+### [x] 3 · Reconsider the sudoers hint printed on every install
 
 **From:** this install, observed but not acted on.
 
@@ -114,9 +118,11 @@ defensible and the line is not wrong. Decide before changing it.
 
 **Size:** one conditional, or a documentation move.
 
+**Done:** 075a46b. Decided: moved to the README rather than made conditional — at install time there are normally no repo configs, so the conditional would print nothing on a first install anyway.
+
 ---
 
-### [ ] 4 · The webhook recipe is printed once and cannot be re-printed
+### [x] 4 · The webhook recipe is printed once and cannot be re-printed
 
 **From:** this install, in the order a first-time operator would naturally take it:
 `flipd add` first, `install.sh --host` afterwards. `add` printed the webhook recipe
@@ -143,11 +149,13 @@ because it adds no surface.
 Keep that shape; do not let a convenience rewrite print the value.
 
 **Size:** move the recipe text into a shared helper, call it from both commands, one
+
+**Done:** fad055a. Extracted to `lib/cli/recipe.mjs`; `check` prints it with the current `PUBLIC_HOST`.
 test that `check` prints it with the real host.
 
 ---
 
-### [ ] 5 · The shipped Caddy block has no access log
+### [x] 5 · The shipped Caddy block has no access log
 
 **From:** this install. With the shipped block, a delivery from GitHub that flipd
 accepted left no trace at either layer: flipd was silent (item 1) and Caddy's access
@@ -176,6 +184,8 @@ already looks.
 catch-all only, not other sites on the same Caddy. Say so in the README's Caddy note.
 
 **Size:** three lines in the heredoc, one line in `test/install.test.mjs`.
+
+**Done:** b09404f, 51189be. The log turned out to record request headers including `X-Hub-Signature-256` — the header item 1 exists to keep out of logs — so the second commit filters it. Verified on the box: signed ping returns pong, request logged, signature absent, other headers present.
 
 ---
 
@@ -236,3 +246,54 @@ definition`). And `output file /var/log/caddy/...` is refused by the Debian unit
 sandbox. Caddy kept serving the previous config through both, so the endpoint never
 went down. Worth one line in the README's Caddy note: everything in `conf.d/` is
 imported, so do not leave backups there.
+
+---
+
+### [ ] 6 · Two post-verification sinks still take raw wire values
+
+**From:** the whole-branch review of the fixes for items 1–5, 2026-09-06.
+Not observed failing on the box; found by reading the code beside the change
+item 1 made.
+
+**Why:** item 1 introduced `cleanForLog` in `lib/hook.mjs` and routed every
+value the webhook handler journals through it. Two sinks one file over were
+outside that item's scope and still write raw wire values: `lib/serve.mjs`
+journals `now ${sshUrl}` on the renamed-repository path, and writes
+`${info.sha} ${info.pusher}` into `events.log`, where `pusher` is whatever
+GitHub relays from the payload — arbitrary text under an authenticated
+signature. A newline in either forges a log line, which is exactly the hazard
+item 1 closed in the handler.
+
+**Change:** route both through `cleanForLog` (export is already there). Cap
+`pusher` short; a GitHub login is at most 39 characters.
+
+**Watch for:** `events.log` is read back by `flipd status` and `flipd log`;
+confirm nothing parses those two fields positionally in a way a `?`
+replacement would break. It should not — they are display fields — but check
+before assuming.
+
+**Size:** two call sites, one test each.
+
+---
+
+### [ ] 7 · The Caddy-filter test checks position, not nesting
+
+**From:** the scoped re-review of the fix for item 5, 2026-09-06.
+
+**Why:** `test/install.test.mjs` asserts the signature-filter line sits between
+`log {` and `handle /deploy` and calls that "inside the log block". It is not the
+same thing: the re-reviewer showed by simulation that moving the filter out of
+`log {}` to sit beside it -- still before `handle /deploy` -- passes the
+assertion. The shipped block nests correctly, so nothing is wrong today; the
+test would simply not notice if that changed.
+
+**Change:** assert the nesting rather than the ordering. The block is plain
+text in a shell heredoc, so this means either a small brace-depth scan of the
+extracted block, or matching the `log { ... }` span and requiring the delete
+line inside it.
+
+**Watch for:** `install.sh` is never executed by the suite, so this test is the
+only automated guard on the generated Caddyfile. Do not weaken the other
+assertions in the same test while strengthening this one.
+
+**Size:** one helper in the test, no production change.
