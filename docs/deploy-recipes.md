@@ -38,9 +38,10 @@ The reference for every conf key and every variable is in the README under
   running as any other user cannot read the release where it sits. Either the
   service runs as `flipd`, or `DEPLOY` copies the release somewhere that user
   can read.
-- **Nothing written inside a release directory survives.** The next build
-  is a fresh worktree, a rollback points `current` at an older one, and
-  prune deletes the directory. Anything the served process writes —
+- **Nothing written inside a release directory outlives that release.** The
+  next build is a fresh worktree, a rollback points `current` at an older
+  one, and prune deletes the directory once it is neither live, previous,
+  pending nor among the `KEEP` newest. Anything the served process writes —
   uploads, a SQLite file, a cache — must live outside
   `/var/lib/flipd/<name>/releases/`, and `DEPLOY` is where the symlink or
   copy to that place is made. The copy-out recipes never hit this;
