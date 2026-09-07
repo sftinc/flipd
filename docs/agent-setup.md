@@ -91,7 +91,11 @@ Each step says whether it can be undone.
    group is what lets `status`, `check`, `run`, `rollback` and `log` work
    without `sudo`.
 4. **Add a forge account** (**gate** — see the token rule below), if they want
-   automatic setup:
+   automatic setup. **Ask; do not assume they need one.** For a single repo,
+   creating a scoped token is usually more work than pasting a deploy key once,
+   and step 5 prints everything needed for that. An account pays for itself from
+   the second repo onward, and on Forgejo or Gitea it also records the host's
+   SSH key, which otherwise has to be done by hand:
 
        sudo flipd account add <host> --kind github|forgejo|gitea < token-file
 

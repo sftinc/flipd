@@ -58,17 +58,17 @@ and the Caddy block is printed to paste by hand. See
 
 ## Add a repo
 
-    sudo flipd account add github.com --kind github < token-file   # once per forge
-    sudo flipd add https://github.com/you/app --root .
+    sudo flipd add git@github.com:you/app.git --root .
+    # paste the deploy key and the webhook it prints
     sudo vi /etc/flipd/repos/app.conf        # BUILD and DEPLOY
     flipd check app
 
-The account is one access token, used only while `add` runs, stored root-only —
-with it, `add` uploads the deploy key and creates the webhook for you. Where to
-get the token and which scopes it needs are in
-[docs/accounts.md](docs/accounts.md). Without an account, `add` prints the
-deploy key and the webhook for you to paste instead:
-[docs/adding-a-repo.md](docs/adding-a-repo.md).
+`add` generates a read-only deploy key and prints it, along with the webhook to
+create — Payload URL, where the secret is, and a `gh api` pipeline if you would
+rather not click. Adding more than one repo, or on Forgejo or Gitea? Give flipd
+an account for the host and `add` does both steps itself:
+[docs/accounts.md](docs/accounts.md). Either way,
+[docs/adding-a-repo.md](docs/adding-a-repo.md) is the full walkthrough.
 
 ## Or let an agent do it
 
