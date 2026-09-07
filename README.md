@@ -70,6 +70,21 @@ get the token and which scopes it needs are in
 deploy key and the webhook for you to paste instead:
 [docs/adding-a-repo.md](docs/adding-a-repo.md).
 
+## Or let an agent do it
+
+Setup is the fiddly part — a deploy key, a webhook, and a `DEPLOY` command that
+actually fits your app. Paste this into a coding agent open in the repo you
+want deployed:
+
+    Set up flipd to build and deploy this repo on my server, following
+    https://raw.githubusercontent.com/sftinc/flipd/main/docs/agent-setup.md
+
+It reads your project to work out `BUILD` and `DEPLOY`, then sets flipd up on
+your box over SSH, stopping to ask before anything that cannot be undone —
+the installer, the forge token, and the deploy key and webhook it creates on
+your forge. [docs/agent-setup.md](docs/agent-setup.md) is what it follows, and
+is worth reading first so you know what it will and will not do.
+
 ## Every day
 
     flipd status
@@ -104,6 +119,7 @@ Flags, exit codes, and which need `sudo`: [docs/commands.md](docs/commands.md).
 
 | File | Answers |
 |---|---|
+| [agent-setup.md](docs/agent-setup.md) | pointing a coding agent at your server to do the setup |
 | [install.md](docs/install.md) | requirements, `install.sh`, `--host`, upgrading |
 | [adding-a-repo.md](docs/adding-a-repo.md) | the `add` walkthrough, both paths |
 | [accounts.md](docs/accounts.md) | forge tokens, scopes, host keys |

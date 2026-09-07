@@ -19,7 +19,7 @@ everywhere.
 | [`test/`](test/CLAUDE.md) | `node:test`, real git repos and real sockets — no mocking framework |
 | `bin/flipd` | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here. |
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
-| `docs/` | One file per reader question — install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
+| `docs/` | One file per reader question — agent setup, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
 | `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
 | `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
 
@@ -47,7 +47,11 @@ not cover it.
 **Never execute `install.sh`.** It runs as root: creates users, writes `/etc`,
 installs a systemd unit and Caddy. There is no undo. It is verified statically
 only — `sh -n` plus text assertions in `test/install.test.mjs`. A test that runs
-it is a defect.
+it is a defect. That binds an agent working **in this repo**, which is what this
+file governs. An agent installing flipd on an operator's own server is a
+different act against a different machine; its instructions are
+[`docs/agent-setup.md`](docs/agent-setup.md), and running the installer there,
+behind that file's confirmation gate, is the job rather than a violation.
 
 **Zero dependencies.** No `npm install`, no lockfile, no runtime packages.
 
