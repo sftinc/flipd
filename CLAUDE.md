@@ -19,7 +19,7 @@ everywhere.
 | [`test/`](test/CLAUDE.md) | `node:test`, real git repos and real sockets — no mocking framework |
 | `bin/flipd` | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here. |
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
-| `docs/` | Documentation for a reader: instructions, help, recipes. Tracked. Nothing scratch goes here. |
+| `docs/` | One file per reader question — install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
 | `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
 | `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
 
