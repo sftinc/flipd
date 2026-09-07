@@ -21,6 +21,7 @@ everywhere.
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
 | `docs/` | One file per reader question — agent setup, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
 | `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
+| `SERVER.md` | Boxes: address, access, hostnames. Git-ignored — **this repo is public.** Read server details from there; never copy them into a tracked file. |
 | `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
 
 ## Commands
@@ -106,17 +107,17 @@ which would make the next prune delete everything.
 
 ## The test server
 
-There is a live box for exercising `install.sh` and the real webhook path. It runs
-the same repo, deployed by flipd itself, so `/opt/flipd` (the running service) and
-`/var/lib/flipd/flipd/` (the deployed release) are two different checkouts —
-upgrading the service is `git -C /opt/flipd pull && systemctl restart flipd`,
-which no deploy does for you.
+There is a live box for exercising `install.sh` and the real webhook path. It
+runs the same repo, deployed by flipd itself, so `/opt/flipd` (the running
+service) and `/var/lib/flipd/flipd/` (the deployed release) are two different
+checkouts — upgrading the service is `git -C /opt/flipd pull && systemctl
+restart flipd`, which no deploy does for you.
 
-    ssh -i ~/.ssh/id_ed25519_hetzner root@89.167.40.99      # no ~/.ssh/config entry; pass the key
-    flipd status                                            # on the box
-    journalctl -u flipd -u caddy -n 50
+**Its address, access details and public hostname live in `SERVER.md` in the
+repo root, which is git-ignored.** Read them from there. Anything new you learn
+about a box — an address, a key, a hostname, a port, a quirk — is written there
+too, and never into a tracked file: this repository is public, and these details
+were in this file until 2026-09-07.
 
-Public endpoint `https://flipd.sftns.app/deploy` (Caddy terminates TLS, proxies to
-`127.0.0.1:9000`). DNS is Cloudflare with the proxy **off** — turning it on breaks
-ACME renewal. Confirm a change on the box behaviourally, not by reading config:
-`caddy validate` proves syntax, not that a field path matched.
+Confirm a change on the box behaviourally, not by reading config: `caddy
+validate` proves syntax, not that a field path matched.
