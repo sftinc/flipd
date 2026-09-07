@@ -36,6 +36,61 @@ Partway through its output, the installer prints a
 shell, or `newgrp flipd`) so your own account can use the commands
 below without `sudo`. See [Permissions](commands.md#permissions).
 
+## What the installer does
+
+It runs as root, and every step is skip-if-present, so a re-run is safe — and
+is how a `git pull` to the clone reaches the systemd unit and the logrotate
+policy, which are files in this repository. In order:
+
+- **Checks the prerequisites** — `git`, `node` 20 or newer, `ssh-keygen`. A
+  missing one stops the run before anything is written.
+- **Creates the `flipd` system user**, no login shell, home `/var/lib/flipd`,
+  with a group of the same name. That group is the whole access control for the
+  commands, which is why the run prints a `sudo usermod -aG flipd <you>` line
+  for you to run.
+- **Creates the trees** — `/etc/flipd` with `repos/` and `env/`, mode `0750`
+  `root:flipd`; `/var/lib/flipd` and `/var/log/flipd`, mode `0750`
+  `flipd:flipd`. Config is readable by the service and writable only by root;
+  state and logs are the service's own. See [Where things
+  live](layout.md).
+- **Writes `/etc/flipd/flipd.conf`** with a freshly generated `WEBHOOK_SECRET`
+  and defaults for the rest — see [The server
+  file](configuration.md#the-server-file). An existing file is left as it is,
+  apart from `PUBLIC_HOST`, which `--host` sets. Its ownership is repaired to
+  `root:flipd 0640` on every run, including for a file you wrote by hand: left
+  `root:root 0600` the service cannot read it and crash-loops.
+- **Fetches GitHub's SSH host keys** from `api.github.com/meta` into
+  `/var/lib/flipd/.ssh/known_hosts`, once. An empty or keyless answer aborts
+  rather than writing the file, because a non-empty-but-useless `known_hosts`
+  wedges every fetch on host key verification and no later run would replace
+  it.
+- **Links `/usr/local/bin/flipd`** to `bin/flipd` in this clone, and sets the
+  mode bit a checkout may have lost.
+- **Installs `flipd.logrotate`** — a file in the repository root — to
+  `/etc/logrotate.d/flipd`. It rotates every repo's `events.log` monthly and
+  keeps twelve, re-creating each one `0640 flipd flipd` so the service can
+  still append to it. flipd never prunes that log itself.
+- **Installs `flipd.service`** — also in the repository root — to
+  `/etc/systemd/system/`, enables it, restarts it, and checks two seconds later
+  that it is still running. The unit runs `bin/flipd serve` as `flipd`;
+  `RuntimeDirectory=flipd` is what creates `/run/flipd` for the socket the
+  commands talk to; and `KillMode=mixed` sends `SIGTERM` to flipd alone, so a
+  stop lets it kill a running build's process group deliberately and record the
+  attempt as `interrupted`. The shipped `ExecStart` names `/opt/flipd`; a clone
+  anywhere else gets its real path substituted into the installed copy, and the
+  run says so out loud.
+- **Wires Caddy**, with `--host` only. Installs Caddy from its apt repository
+  if it is missing, writes the site block described above, adds `import
+  /etc/caddy/conf.d/*` to `/etc/caddy/Caddyfile` if it is not there already,
+  reloads, and then proves the path end to end with a signed ping to
+  `https://<host>/deploy`. The ping is retried with a growing gap for up to 50
+  seconds, because a first install is still waiting on an ACME certificate and
+  every handshake fails until it lands; `pong` means a webhook from GitHub will
+  arrive.
+
+Nothing else on the box is touched, apart from the apt repository and
+keyring the Caddy step adds when it has to install Caddy itself.
+
 ## Upgrade flipd
 
     git -C /opt/flipd pull && sudo systemctl restart flipd

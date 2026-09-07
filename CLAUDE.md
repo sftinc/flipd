@@ -19,6 +19,8 @@ everywhere.
 | [`test/`](test/CLAUDE.md) | `node:test`, real git repos and real sockets — no mocking framework |
 | `bin/flipd` | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here. |
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
+| `flipd.service` | The systemd unit the installer writes to `/etc/systemd/system/`. `KillMode=mixed` is load-bearing: `SIGTERM` reaches flipd only, so `run.mjs` kills the build's own process group and records `interrupted` rather than being killed alongside it. `RuntimeDirectory=flipd` is what creates `/run/flipd` for the CLI socket. |
+| `flipd.logrotate` | The `/etc/logrotate.d/flipd` policy for every repo's `events.log` — monthly, twelve kept. `create 0640 flipd flipd` is the line that keeps the service able to append after a rotation. |
 | `docs/` | One file per reader question — agent setup, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
 | `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
 | `SERVER.md` | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up. |

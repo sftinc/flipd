@@ -111,7 +111,7 @@ Flags, exit codes, and which need `sudo`: [docs/commands.md](docs/commands.md).
 | File | Answers |
 |---|---|
 | [agent-setup.md](docs/agent-setup.md) | pointing a coding agent at your server, to set flipd up and to manage it after |
-| [install.md](docs/install.md) | requirements, `install.sh`, `--host`, upgrading |
+| [install.md](docs/install.md) | requirements, `install.sh` and what it does to the box, `--host`, upgrading |
 | [adding-a-repo.md](docs/adding-a-repo.md) | the `add` walkthrough, both paths |
 | [accounts.md](docs/accounts.md) | forge tokens, scopes, host keys |
 | [configuration.md](docs/configuration.md) | every key in the repo file and the server file |
