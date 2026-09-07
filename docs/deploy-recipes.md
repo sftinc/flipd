@@ -11,7 +11,7 @@ Getting the release reachable from outside is the other half, and it is not a
 `DEPLOY` command: see [serving-with-caddy.md](serving-with-caddy.md).
 
 The reference for every conf key and every variable is in
-[The repo file](../README.md#the-repo-file) and
+[The repo file](configuration.md#the-repo-file) and
 [What BUILD and DEPLOY see](build-and-deploy.md#what-build-and-deploy-see).
 
 ## Getting root

@@ -69,7 +69,7 @@ test('install.sh: an existing conf is always reconciled to root:flipd 0640', asy
   const lines = text.split('\n');
   // Must be unconditional -- not indented inside the "file did not exist yet"
   // branch -- or an operator's hand-written conf (root:root 0600, as both the
-  // README and `add`'s own output leave someone to create by hand) never gets
+  // docs and `add`'s own output leave someone to create by hand) never gets
   // fixed by a re-run, and the service (User=flipd) gets EACCES and
   // crash-loops under Restart=on-failure forever.
   const chownLine = lines.findIndex((l) => /^chown root:flipd \/etc\/flipd\/flipd\.conf$/.test(l));

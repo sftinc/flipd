@@ -104,7 +104,7 @@ elif [ -n "$HOST" ]; then
 fi
 # Unconditional, on every run, whether the file was just created, just edited
 # for --host, or untouched this time: an operator who hand-writes this file
-# before the first install (both the README and `add`'s own output point at
+# before the first install (both the docs and `add`'s own output point at
 # it) leaves it root:root 0600, and a run that only fixed ownership inside the
 # "just created" branch above would never repair that -- the service, which
 # runs as User=flipd, would then get EACCES and crash-loop forever.
