@@ -77,6 +77,32 @@ What they tell you:
   missing `flipd` group membership for the account you are on, not a dead
   service. See [commands.md](commands.md#permissions).
 
+## Write down what you learn about the box
+
+The first part of any job is finding out things that are in neither this file
+nor their repository: the address, the SSH user, which key, the public hostname,
+what else the box runs, which of its quirks cost you twenty minutes. Write them
+down as you go, in the operator's repository, in `SERVER.md`. The next session —
+yours or another agent's — reads that instead of working out [where you
+are](#where-you-are) from nothing again.
+
+Three things about that file, in this order:
+
+1. **Ask the operator first.** It is their repository, and this creates a file
+   in it.
+2. **Add `SERVER.md` to `.gitignore` before you create it**, never after.
+   Between writing it and ignoring it there is a window where a `git add -A`
+   commits a server's address, and a repository's history does not forget.
+
+       grep -qx 'SERVER.md' .gitignore || printf 'SERVER.md\n' >> .gitignore
+
+3. **No secrets in it.** [Rules you must not break](#rules-you-must-not-break)
+   binds this file exactly as it binds a log: the key's path, never the key; the
+   name of the file a secret lives in, never the value.
+
+The shape to follow — one block per box, and what belongs under each heading —
+is [SERVER.example.md](../SERVER.example.md).
+
 ## Ask before these
 
 Do not run any of these without the operator agreeing in that turn. Say what it

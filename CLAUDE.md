@@ -24,6 +24,7 @@ everywhere.
 | `docs/` | One file per reader question — the agent entry point, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
 | `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
 | `SERVER.md` | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up. |
+| `SERVER.example.md` | The shape `SERVER.md` follows, and what [`docs/agent.md`](docs/agent.md) hands an agent for an operator's own box. Tracked, so it carries placeholders and rules and never a real address. |
 | `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
 
 ## Commands
@@ -113,6 +114,9 @@ Any box this repo is exercised on — a test server, a staging box, whatever you
 have — is described in `SERVER.md` in the root, which is git-ignored because
 **this repository is public.** Its address, access details, hostnames and quirks
 go there and never into a tracked file; they were in this file until 2026-09-07.
+One `##` block per box, in the shape of
+[`SERVER.example.md`](SERVER.example.md) — which is tracked, and is also what
+[`docs/agent.md`](docs/agent.md) points an agent at for an operator's server.
 
 **If `SERVER.md` is not present, no box is set up.** Do not infer one, do not go
 looking for an address in the git history, and do not create one without being
