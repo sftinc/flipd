@@ -13,6 +13,36 @@ the live release. `DEPLOY` runs after the flip, and its exit code is the whole
 verdict — zero confirms the release, anything else leaves it `pending` and
 blocks the next webhook build until someone looks.
 
+## What you get
+
+- **Any number of repos on one box.** One conf file and one webhook each, one
+  service for all of them; one worker, so no two builds ever interleave.
+- **GitHub, Forgejo and Gitea.** With an account for the host, `add` generates
+  the deploy key, uploads it, and creates the webhook itself.
+- **Atomic releases.** `current` is swapped by `rename()`, and a failure before
+  the flip leaves the live release untouched.
+- **Rollback that means it.** `flipd rollback` re-runs the `DEPLOY` recorded
+  with that release, not whatever the conf says now.
+- **A failed deploy blocks the next build.** An unconfirmed release stays
+  `pending` until you settle it, so a broken deploy is never buried by the
+  next push.
+- **Path filters and subdirectories.** `WATCH` and `IGNORE` globs and `ROOT`,
+  so one project in a monorepo builds only when its own files change.
+- **Survives a restart.** An interrupted attempt is recorded as interrupted,
+  orphaned release directories are cleaned, and an unconfirmed flip is
+  reported rather than built over.
+- **Config is live.** Repo files are re-read on every event — edit one and the
+  next push uses it, no restart.
+- **Secrets stay out of logs.** Env-file secrets are masked wherever an
+  attempt's output is written; flipd never prints a token, a key, or the
+  webhook secret.
+- **A deploy key per repo, and no API token at runtime.** The forge token is
+  used only while `add` runs, stored root-only, and safe to revoke afterwards.
+- **Webhooks verified before they are parsed.** Constant-time HMAC-SHA256,
+  with a body cap and a connection cap.
+- **No dependency tree.** Zero npm dependencies, by rule; automatic TLS if you
+  let the installer set up Caddy.
+
 ## Install
 
 The box needs `git`, `node` 20 or newer, `ssh-keygen` and `curl`.
