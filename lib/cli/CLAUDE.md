@@ -50,11 +50,11 @@ reason.
 
 ## Exit codes are an interface
 
-They are documented in the README's Commands table and scripts depend on them.
+They are documented in `docs/commands.md` and scripts depend on them.
 `check` returning `4` for "behind" is the load-bearing example: `0` up to date,
-`4` behind, `5` an unconfirmed `pending` release (outranks `4`: the README's cron
-catch-up keys on `4`, and must not force-build over a failed deploy), `1` a
-failed row, `3` service down. Do not renumber.
+`4` behind, `5` an unconfirmed `pending` release (outranks `4`: the cron
+catch-up in `docs/operating.md` keys on `4`, and must not force-build over a
+failed deploy), `1` a failed row, `3` service down. Do not renumber.
 
 ## The webhook recipe
 
