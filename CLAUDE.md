@@ -21,7 +21,7 @@ everywhere.
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
 | `flipd.service` | The systemd unit the installer writes to `/etc/systemd/system/`. `KillMode=mixed` is load-bearing: `SIGTERM` reaches flipd only, so `run.mjs` kills the build's own process group and records `interrupted` rather than being killed alongside it. `RuntimeDirectory=flipd` is what creates `/run/flipd` for the CLI socket. |
 | `flipd.logrotate` | The `/etc/logrotate.d/flipd` policy for every repo's `events.log` — monthly, twelve kept. `create 0640 flipd flipd` is the line that keeps the service able to append after a rotation. |
-| `docs/` | One file per reader question — agent setup, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
+| `docs/` | One file per reader question — the agent entry point, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
 | `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
 | `SERVER.md` | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up. |
 | `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
@@ -53,7 +53,7 @@ only — `sh -n` plus text assertions in `test/install.test.mjs`. A test that ru
 it is a defect. That binds an agent working **in this repo**, which is what this
 file governs. An agent installing flipd on an operator's own server is a
 different act against a different machine; its instructions are
-[`docs/agent-setup.md`](docs/agent-setup.md), and running the installer there,
+[`docs/agent.md`](docs/agent.md), and running the installer there,
 behind that file's confirmation gate, is the job rather than a violation.
 
 **Zero dependencies.** No `npm install`, no lockfile, no runtime packages.
