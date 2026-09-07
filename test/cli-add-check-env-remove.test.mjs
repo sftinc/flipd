@@ -649,6 +649,28 @@ test('add with an account: an SSH host that differs from the API host is named a
   }
 });
 
+test('add with an account: the ssh-keyscan command for a differing SSH host carries its non-default port, so the recorded key is the one ssh will look up', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/team/app': [200, { id: 12, ssh_url: 'ssh://git@git.example.com:2222/team/app.git' }],
+    'GET /repos/team/app/hooks': [200, []],
+    'POST /repos/team/app/keys': [201, { id: 5 }],
+    'POST /repos/team/app/hooks': [201, { id: 9 }],
+  });
+  try {
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 0);
+    // ssh connecting on 2222 looks the key up under `[git.example.com]:2222`,
+    // which is what `ssh-keyscan -p 2222` writes; a scan of port 22 writes a
+    // line ssh would never match, and the first build would still fail on
+    // host key verification after the operator followed the instruction.
+    assert.match(o.out(), /ssh host\s+git\.example\.com:2222 is not forge\.example\.com/);
+    assert.match(o.out(), new RegExp(`ssh-keyscan -p 2222 git\\.example\\.com >> ${p.knownHosts.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
 test('add with an account: a malformed flipd.conf is reported by name and message, not the install.sh placeholder', async () => {
   const p = await makePrefix();
   await fs.writeFile(p.mainConf, 'LISTEN=127.0.0.1:0\n');   // no WEBHOOK_SECRET: parseMain refuses to load it
