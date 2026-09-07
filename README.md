@@ -204,35 +204,6 @@ When the checkout contains `.gitmodules`, submodules are initialised
 recursively over the same key before `BUILD` runs. A submodule that cannot
 be fetched is `checkout failed`, and the live release is untouched.
 
-## What BUILD and DEPLOY see
-
-Both run as the `flipd` user under `/bin/sh -c`, in `releases/<id>/<ROOT>`,
-with their output going to the attempt log. The environment is built from
-scratch, not inherited from the service:
-
-| Variable | Value |
-|---|---|
-| `PATH` | `/usr/local/bin:/usr/bin:/bin` |
-| `HOME` | `/var/lib/flipd`, so npm's cache persists across builds |
-| `DEPLOY_NAME` | the repo's name |
-| `DEPLOY_REPO` | `REPO` |
-| `DEPLOY_BRANCH` | `BRANCH` |
-| `DEPLOY_SHA` | the commit being built, or on rollback, flipped to |
-| `DEPLOY_PREVIOUS_SHA` | the commit that was live when this attempt started, or empty |
-| `DEPLOY_RELEASE_DIR` | absolute path of `releases/<id>` |
-| `DEPLOY_RELEASE_ID` | the release id |
-| `DEPLOY_ATTEMPT_ID` | the attempt id, which names the log file |
-| `DEPLOY_OUTCOME` | `ON_FAILURE` only: `fetch failed`, `checkout failed`, `build failed`, `deploy failed` or `interrupted` |
-| `DEPLOY_LOG` | `ON_FAILURE` only: path of the attempt log |
-
-Then every line of the phase's env file, set with
-`sudo flipd env <name> build|deploy --set K=V`. flipd's own variables win: an
-env file cannot replace `PATH` or `HOME` or set any `DEPLOY_*` name, and a
-line that tries is one warning in the attempt log. Both env files are read
-once when the attempt opens, and every value of eight characters or more is
-masked wherever the attempt's output is written, so a secret a build prints
-does not reach a log.
-
 ## The server file
 
 `/etc/flipd/flipd.conf` is written by the installer and read once, when the
@@ -274,21 +245,6 @@ root):
 
 If you see either of those but `systemctl status flipd` says the
 service is fine, it's almost always a missing group, not a dead service.
-
-### A DEPLOY command that needs root
-
-`DEPLOY` runs as the `flipd` user. If it must do something only root can —
-restart a system service, say — give `flipd` passwordless `sudo` for **one
-script and nothing else**, and put the privileged steps in that script:
-
-    echo 'flipd ALL=(root) NOPASSWD: /usr/local/bin/<your-adopt-script>' > /etc/sudoers.d/flipd
-    chmod 0440 /etc/sudoers.d/flipd
-
-Then `DEPLOY=sudo /usr/local/bin/<your-adopt-script>`. Keep the script's path
-absolute and its contents root-owned and not group- or world-writable, or the
-rule grants root to whoever can edit it. The installer used to print this on
-every run; it lives here now so that it is read when it is needed rather than
-skimmed when it is not.
 
 ## Commands
 

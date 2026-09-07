@@ -341,4 +341,4 @@ EOF
 fi
 
 say ""
-say "next: sudo flipd add <git-url>   (a DEPLOY that needs root: see README, Permissions)"
+say "next: sudo flipd add <git-url>   (a DEPLOY that needs root: see docs/build-and-deploy.md)"

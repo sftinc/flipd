@@ -3,60 +3,24 @@
 flipd fetches, builds, and flips `/var/lib/flipd/<name>/current` to the new
 release. It writes nowhere else. Making that release the thing being served is
 `DEPLOY`'s job, and this file is a set of `DEPLOY` commands that do it, one per
-kind of thing served. The contract every recipe runs under comes first; each
-recipe then shows only what differs.
+kind of thing served. Each recipe shows only what differs from the contract
+every one of them runs under, which is in
+[build-and-deploy.md](build-and-deploy.md) — read that first.
 
 One section is not a `DEPLOY` command. [Serving the repo through
 Caddy](#serving-the-repo-through-caddy) is the front door in front of the
 recipes above it: `install.sh --host` already put Caddy on the box for the
 webhook, and the same Caddy can serve the app.
 
-The reference for every conf key and every variable is in the README under
+The reference for every conf key and every variable is in
 [The repo file](../README.md#the-repo-file) and
-[What BUILD and DEPLOY see](../README.md#what-build-and-deploy-see).
-
-## The contract
-
-- `DEPLOY` runs as the `flipd` user, under `/bin/sh -c`, with the working
-  directory set to `releases/<id>/<ROOT>`: the fresh checkout that `BUILD`
-  just passed in. `DEPLOY_RELEASE_DIR` holds the absolute path of the release
-  (without `ROOT`).
-- By the time it runs, `current` already points at this release. A `DEPLOY`
-  that fails leaves `current` pointing at an unconfirmed release, which is
-  what `PENDING` in `flipd status` means.
-- **The exit code is all flipd believes.** Zero confirms the release: it
-  becomes `live`, the old live becomes `previous`. Anything else is
-  `deploy failed`: the repo is `PENDING`, webhook-triggered runs are refused
-  until `flipd rollback <name>` or `flipd run <name>` settles it, and
-  `ON_FAILURE` fires. A warning printed to stderr with exit `0` is a success.
-- **Rollback runs `DEPLOY` again**, pointed at the old release, with no
-  `BUILD`. So the command must work when the release it is handed is older
-  than the one currently served, and it must be safe to run twice against the
-  same release. It gets the `DEPLOY` and `ROOT` recorded when that release was
-  built, not the ones in the conf now, so editing `DEPLOY` affects the next
-  build and not a rollback to an old one.
-- It has `TIMEOUT` seconds (default 1200) of its own, separate from `BUILD`.
-- Everything it prints goes to the attempt log, with env-file values masked.
-  Secrets come from `sudo flipd env <name> deploy --set K=V`, never from the
-  conf line, which the attempt log quotes in full.
-- `/var/lib/flipd/<name>` is mode `0750`, owned `flipd:flipd`. A service
-  running as any other user cannot read the release where it sits. Either the
-  service runs as `flipd`, or `DEPLOY` copies the release somewhere that user
-  can read.
-- **Nothing written inside a release directory outlives that release.** The
-  next build is a fresh worktree, a rollback points `current` at an older
-  one, and prune deletes the directory once it is neither live, previous,
-  pending nor among the `KEEP` newest. Anything the served process writes —
-  uploads, a SQLite file, a cache — must live outside
-  `/var/lib/flipd/<name>/releases/`, and `DEPLOY` is where the symlink or
-  copy to that place is made. The copy-out recipes never hit this;
-  anything served from `current` does.
+[What BUILD and DEPLOY see](build-and-deploy.md#what-build-and-deploy-see).
 
 ## Getting root
 
 Most recipes need one privileged step: restart a unit, or write into a
-directory `flipd` does not own. The README's
-[A DEPLOY command that needs root](../README.md#a-deploy-command-that-needs-root)
+directory `flipd` does not own.
+[A DEPLOY command that needs root](build-and-deploy.md#a-deploy-command-that-needs-root)
 gives the rule: passwordless `sudo` for one root-owned script, nothing else.
 
 sudo resets the environment by default, so `DEPLOY_RELEASE_DIR` and the rest
