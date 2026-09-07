@@ -61,8 +61,8 @@ is now empty.
 ## Reverse proxy to the app
 
 The block above, paired with either systemd recipe — [copied
-out](#a-systemd-service-copied-out) or [running as
-flipd](#a-systemd-service-that-runs-as-flipd). Caddy does not read the release
+out](deploy-recipes.md#a-systemd-service-copied-out) or [running as
+flipd](deploy-recipes.md#a-systemd-service-that-runs-as-flipd). Caddy does not read the release
 at all, so nothing about `/var/lib/flipd`'s ownership matters here. This is the
 variant to reach for by default.
 
@@ -76,7 +76,7 @@ or on the previous release still holding the port.
 
 ## Static files, from the copy
 
-Paired with [A static site](#a-static-site). `root` names the directory that
+Paired with [A static site](deploy-recipes.md#a-static-site). `root` names the directory that
 recipe's `DEPLOY` rsyncs into — the two have to be the same path — and Caddy
 serves it as an ordinary directory, never looking at `/var/lib/flipd`:
 
@@ -110,7 +110,7 @@ rsync, and flipd's own prune is the only thing that has to clean up:
     root * /var/lib/flipd/app/current/dist
 
 `DEPLOY` is then just a check that the build landed, as in [Something that
-needs no privilege at all](#something-that-needs-no-privilege-at-all).
+needs no privilege at all](deploy-recipes.md#something-that-needs-no-privilege-at-all).
 
 The cost is a permission change, and it is the reason this is not the default.
 Caddy runs as its own user, and every directory in that path is closed to it:
