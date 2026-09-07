@@ -131,9 +131,9 @@ test('check runs on the worker through the socket, refuses when busy', async () 
 
 test('check reports an unconfirmed pending release separately from being behind', async () => {
   // The two call for opposite actions: behind wants `flipd run`, pending wants
-  // a look first. Folding pending into behind is what let the README's cron
-  // catch-up force-build over an unconfirmed flip. So: live at the head with
-  // a pending release is pending and not behind.
+  // a look first. Folding pending into behind is what let the cron catch-up
+  // in docs/operating.md force-build over an unconfirmed flip. So: live at the
+  // head with a pending release is pending and not behind.
   const p = await makePrefix();
   await writeMain(p);
   const src = await makeSourceRepo();
