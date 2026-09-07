@@ -85,6 +85,10 @@ the installer, the forge token, and the deploy key and webhook it creates on
 your forge. [docs/agent-setup.md](docs/agent-setup.md) is what it follows, and
 is worth reading first so you know what it will and will not do.
 
+The same file covers what comes after: upgrading flipd, adding a second repo,
+changing a build command, rotating a token, rolling back. Point an agent at it
+again for any of those.
+
 ## Every day
 
     flipd status
@@ -119,7 +123,7 @@ Flags, exit codes, and which need `sudo`: [docs/commands.md](docs/commands.md).
 
 | File | Answers |
 |---|---|
-| [agent-setup.md](docs/agent-setup.md) | pointing a coding agent at your server to do the setup |
+| [agent-setup.md](docs/agent-setup.md) | pointing a coding agent at your server, to set flipd up and to manage it after |
 | [install.md](docs/install.md) | requirements, `install.sh`, `--host`, upgrading |
 | [adding-a-repo.md](docs/adding-a-repo.md) | the `add` walkthrough, both paths |
 | [accounts.md](docs/accounts.md) | forge tokens, scopes, host keys |

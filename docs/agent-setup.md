@@ -1,10 +1,11 @@
-# Setting flipd up with an agent
+# Setting up and managing flipd with an agent
 
 ## Who this is for
 
 You are a coding agent working in **the operator's application repository** —
 the app they want built and deployed — and your job is to set flipd up on
-**their server** so that pushing to a branch deploys it.
+**their server** so that pushing to a branch deploys it — and then to keep
+it running afterwards.
 
 You are not working on flipd's own source. If you are, stop reading this and
 read [`CLAUDE.md`](../CLAUDE.md) in the flipd repository instead; its rules are
@@ -165,6 +166,100 @@ have them push a real commit and confirm a build starts. Put `check` in cron
 before you finish — that is what catches a lost webhook later:
 
     flipd check <name> || notify-me "<name> needs a look"
+
+## Managing it afterwards
+
+Setup is done once; these come up repeatedly. The same gates apply — anything
+that cannot be undone still needs the operator to agree in that turn.
+
+### Upgrading flipd
+
+    flipd status                                  # every repo must be idle first
+    git -C /opt/flipd pull && sudo systemctl restart flipd
+    systemctl is-active flipd && flipd status
+
+**Check `status` before you restart, every time.** A restart kills whatever is
+mid-build: the running command dies, its attempt is recorded `interrupted`, and
+the in-memory queue is lost — a push that was waiting is simply gone, and the
+forge will not resend it. If anything is running or queued, wait.
+
+### Adding another repo
+
+Do not re-run `install.sh`; the box is already set up. Only steps 4-7 of the run
+order apply: an account if this is a new forge (an existing one covers every
+repo on that host), then `flipd add`, then `BUILD` and `DEPLOY`, then verify.
+`flipd add` is still a gate — it creates a deploy key and a webhook on the
+forge.
+
+### Changing `BUILD` or `DEPLOY`
+
+Edit `/etc/flipd/repos/<name>.conf`. It is re-read on every event, so no restart
+is needed, and `flipd run <name>` builds immediately to test it — `run` bypasses
+`WATCH` and `IGNORE`.
+
+Two things that catch people out:
+
+- **A rollback does not use the edited command.** It re-runs the `DEPLOY` and
+  `ROOT` recorded with *that* release, so fixing `DEPLOY` fixes the next build
+  and not a rollback to an older release.
+- **The server file is not like the repo file.** `/etc/flipd/flipd.conf` is read
+  once at startup, so a change there needs `sudo systemctl restart flipd` — with
+  the same idle check as an upgrade.
+
+### Rolling back on purpose
+
+    flipd rollback <name>
+    flipd log <name> --follow
+
+Re-runs the previous confirmed release's `DEPLOY` with no `BUILD`, and clears a
+`pending`. This is the correct way to settle a failed deploy. Do **not** use
+`flipd run` for that — it builds the new code over an unconfirmed flip, which
+buries the failure instead of resolving it.
+
+### Rotating or removing a forge token
+
+    sudo flipd account remove <host>
+    sudo flipd account add <host> --kind <kind> < token-file
+
+The token rule from "Rules you must not break" applies again in full: the
+operator writes the new file on the box, you redirect it and delete it, you
+never see the value. Nothing already added breaks while there is no account —
+repos keep building with the deploy keys they already have, because the token is
+only ever used while `add` runs.
+
+### Changing a secret the build or deploy uses
+
+    sudo flipd env <name> build --set K=V
+    sudo flipd env <name> deploy --unset K
+
+With neither flag it opens the file in `$EDITOR` and re-validates on save.
+Values of eight characters or more are masked wherever attempt output is
+written. These never belong on the `DEPLOY` conf line, which the attempt log
+quotes in full.
+
+### What a restart or a reboot does
+
+The unit is enabled and `Restart=on-failure`, so flipd comes back on its own
+after a crash or a reboot. At startup it reconciles: an attempt that was
+in-flight is recorded as `interrupted`, release directories no state knows about
+are removed, and an unconfirmed `pending` is reported in the journal. **A
+`pending` survives a restart and still refuses webhook builds** — a reboot does
+not clear one, so settle it with a rollback.
+
+### Monitoring, once it is working
+
+Put `check` in cron before you finish; it is what catches a lost webhook or a
+deploy nobody noticed had failed:
+
+    flipd check <name> || notify-me "<name> needs a look"
+
+To deploy automatically after a missed webhook, key on `4` specifically and
+never on `5`:
+
+    flipd check <name> >/dev/null; [ $? -eq 4 ] && flipd run <name>
+
+`5` outranks `4`, so a repo that is both behind and pending stays put until a
+human looks at it. That is deliberate. See [operating.md](operating.md).
 
 ## When it goes wrong
 
