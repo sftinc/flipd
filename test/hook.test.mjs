@@ -120,6 +120,33 @@ test('the delivery id reaches onPush raw, and is empty when the header is absent
   }
 });
 
+test('the delivery id is on every ignored-push journal line, cleaned and bounded', async () => {
+  // "GitHub says delivered, nothing happened" is the case an operator greps
+  // for, and a push that matched no repo writes no events.log line at all --
+  // the journal is the only trail. The 401 arm is deliberately not here:
+  // nothing from an unverified request is journaled beyond what already is.
+  const lines = [];
+  const h = await listen({ secret: 's', findRepo: async () => null, onPush: async () => ({ status: 202, body: '' }), journal: (l) => lines.push(l) });
+  try {
+    const id = '72d3162e-cc78-11e3-81ab-4c9367dc0958';
+    const post = (payload, delivery) => h.post(payload, { 'x-hub-signature-256': h.sign('s', payload), 'x-github-event': 'push', 'x-github-delivery': delivery });
+    await post(JSON.stringify({ ref: 'refs/tags/v1', repository: { ssh_url: 'git@github.com:o/r.git' } }), id);
+    await post(JSON.stringify({ ref: 'refs/heads/main', deleted: true, repository: { ssh_url: 'git@github.com:o/r.git' } }), id);
+    await post(JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/r.git' } }), id);
+    assert.ok(lines.some((l) => l === `ignored push from 127.0.0.1: git@github.com:o/r.git refs/tags/v1 is not a branch  delivery=${id}`), `not-a-branch carries the id: ${lines}`);
+    assert.ok(lines.some((l) => l === `ignored push from 127.0.0.1: git@github.com:o/r.git main was deleted  delivery=${id}`), `deleted carries the id: ${lines}`);
+    assert.ok(lines.some((l) => l === `ignored push from 127.0.0.1: git@github.com:o/r.git main matches no repo config  delivery=${id}`), `no-match carries the id: ${lines}`);
+    // The header is free-form. It is bounded before the journal; a control
+    // byte cannot be sent (fetch refuses it), and cleanForLog is unit-tested
+    // for that above.
+    await post(JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/r.git' } }), 'd'.repeat(300));
+    const long = lines.filter((l) => l.includes('matches no repo config')).at(-1);
+    assert.equal(long, `ignored push from 127.0.0.1: git@github.com:o/r.git main matches no repo config  delivery=${'d'.repeat(40)}`, 'the id is bounded at 40');
+  } finally {
+    await h.close();
+  }
+});
+
 test('bodies over 26 MiB get 413 before signature checking, declared or chunked; 25 MiB is accepted', async () => {
   const h = await listen({ secret: 's', findRepo: async () => null, onPush: async () => ({ status: 202, body: '' }), journal: () => {} });
   try {

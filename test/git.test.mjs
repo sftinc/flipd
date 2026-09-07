@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makeSourceRepo, tmpdir } from './helpers.mjs';
-import { gitEnv, cloneBare, remoteUrl, setRemoteUrl, fetchBranch, changedFiles, worktreeAdd, worktreeRemove, worktreePrune, lsRemote, shortSha, isBareRepo, redactUserinfo, GitError } from '../lib/git.mjs';
+import { git, gitEnv, cloneBare, remoteUrl, setRemoteUrl, fetchBranch, changedFiles, worktreeAdd, worktreeRemove, worktreePrune, lsRemote, shortSha, isBareRepo, redactUserinfo, GitError } from '../lib/git.mjs';
 
 const opts = () => ({ env: gitEnv({ key: '/nonexistent/key', knownHosts: '/nonexistent/kh', home: '/tmp' }) });
 
@@ -101,7 +101,18 @@ test('gitEnv pins the key and known_hosts and leaks nothing else', () => {
   const env = gitEnv({ key: '/k', knownHosts: '/kh', home: '/h' });
   assert.match(env.GIT_SSH_COMMAND, /-i '\/k' .*IdentitiesOnly=yes.*UserKnownHostsFile='\/kh'.*StrictHostKeyChecking=yes/);
   assert.equal(env.HOME, '/h');
-  assert.deepEqual(Object.keys(env).sort(), ['GIT_SSH_COMMAND', 'GIT_TERMINAL_PROMPT', 'HOME', 'PATH']);
+  assert.deepEqual(Object.keys(env).sort(), ['GIT_CONFIG_SYSTEM', 'GIT_SSH_COMMAND', 'GIT_TERMINAL_PROMPT', 'HOME', 'PATH']);
+});
+
+test("flipd's git reads no system config: /etc/gitconfig cannot reach a fetch", async () => {
+  // Everything else about git's environment is built from scratch (HOME,
+  // PATH, the ssh command), and an ambient /etc/gitconfig is the same class
+  // of surprise. The test's own git already runs this way (helpers.mjs); this
+  // is the service's. Without the setting this either fails to read a file
+  // that is not there or prints whatever the box has in it.
+  const r = await git(['config', '--system', '--list'], opts());
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, '');
 });
 
 test('gitEnv quotes a key path containing a space as a single ssh argument', () => {

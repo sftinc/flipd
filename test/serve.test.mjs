@@ -115,6 +115,7 @@ test('check runs on the worker through the socket, refuses when busy', async () 
     assert.equal(r.ok, true);
     assert.equal(r.passed, true);
     assert.equal(r.behind, true, 'nothing is live yet');
+    assert.equal(r.pending, false, 'nothing is flipped');
     const text = r.rows.map(([k, v]) => `${k} ${v}`).join('\n');
     assert.match(text, /clone created/);
     assert.match(text, new RegExp(`main ${sha.slice(0, 7)}.*live: none.*behind`));
@@ -123,6 +124,32 @@ test('check runs on the worker through the socket, refuses when busy', async () 
     const busy = await sendCommand(p.sock, { cmd: 'check', name: 'r', setRemote: false }, { timeoutMs: 30000 });
     assert.equal(busy.ok, false);
     assert.match(busy.error, /^busy: running r, 0 queued$/);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('check reports an unconfirmed pending release separately from being behind', async () => {
+  // The two call for opposite actions: behind wants `flipd run`, pending wants
+  // a look first. Folding pending into behind is what let the README's cron
+  // catch-up force-build over an unconfirmed flip. So: live at the head with
+  // a pending release is pending and not behind.
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  const sha = await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.repoDir('r'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('r'), 'key'), 'not-a-real-key');
+  await writeState(p.repoDir('r'), { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha }, b: { sha: 'y' } } });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const r = await sendCommand(p.sock, { cmd: 'check', name: 'r', setRemote: false }, { timeoutMs: 30000 });
+    assert.equal(r.ok, true);
+    assert.equal(r.passed, true);
+    assert.equal(r.behind, false, 'live is the head');
+    assert.equal(r.pending, true, 'b is flipped but unconfirmed');
+    assert.ok(r.rows.some(([k, v]) => k === 'pending' && /^b is flipped but unconfirmed/.test(v)), 'the pending row still names the release');
   } finally {
     await svc.close();
   }
@@ -201,13 +228,18 @@ test('a push while pending is refused with 200', async () => {
   const dir = p.repoDir('r');
   await fs.mkdir(dir, { recursive: true });
   await writeState(dir, { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha: 'x' }, b: { sha: 'y' } } });
-  const svc = await serve({ paths: p, journal: () => {} });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
   try {
     const body = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: src.url } });
     const sig = 'sha256=' + createHmac('sha256', 'testsecret').update(body).digest('hex');
     const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sig, 'x-github-event': 'push' } });
     assert.equal(res.status, 200);
     assert.match(await res.text(), /refused/);
+    // Both sinks, like the unreadable-state refusal: events.log is the repo's
+    // record, journald is where an operator is looking.
+    assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /refused pending b; run flipd rollback r or flipd run r\n/);
+    assert.ok(lines.some((l) => l === '[r] refused a push: pending b; run flipd rollback r or flipd run r'), `the refusal is in journald: ${lines}`);
   } finally {
     await svc.close();
   }
@@ -506,11 +538,15 @@ test('the webhook events line carries the delivery id, cut to 40; a coalesced pu
     assert.equal(second.status, 202);
     const third = await post(body);   // no header
     assert.equal(third.status, 202);
+    // No pusher: the field's separator must go with it, not leave a third space.
+    const nobody = JSON.stringify({ ref: 'refs/heads/main', after: 'e'.repeat(40), repository: { ssh_url: src.url } });
+    assert.equal((await post(nobody, 'aaaaaaaa-0000-0000-0000-000000000000')).status, 202);
 
     const events = await fs.readFile(path.join(p.repoLog('r1'), 'events.log'), 'utf8');
     assert.match(events, /webhook c{40} w  delivery=72d3162e-cc78-11e3-81ab-4c9367dc0958\n/);
     assert.match(events, new RegExp(`webhook c{40} w  delivery=d{40}\\n`), 'a long id is cut to 40, not carried whole');
     assert.match(events, /webhook c{40} w\n/, 'no header, no delivery= field');
+    assert.match(events, /webhook e{40}  delivery=aaaaaaaa-0000-0000-0000-000000000000\n/, 'no pusher: sha, two spaces, the id');
     assert.match(events, /queued webhook \(running; will run again after\)/);
   } finally {
     await svc.close();
@@ -553,6 +589,8 @@ test('a push during shutdown is refused with 503, not answered 202 for work that
     assert.equal(res.status, 503);
     assert.equal(await res.text(), 'refused r2 (stopping)');
     assert.match(await fs.readFile(path.join(p.repoLog('r2'), 'events.log'), 'utf8'), /refused stopping\n/);
+    // A shutdown is when an operator is on journalctl, not in a per-repo file.
+    assert.ok(lines.some((l) => l === '[r2] refused a push: stopping; redeliver it from GitHub once flipd is back'), `the refusal is in journald: ${lines}`);
   } finally {
     await closing;
   }

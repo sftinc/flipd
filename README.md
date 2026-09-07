@@ -129,17 +129,18 @@ and live matches the branch head, and non-zero otherwise, so
 
 catches both a lost webhook and a deploy nobody noticed had failed. To tell
 those apart, use the exit code directly — see `check`'s row in
-[Commands](#commands): `0` up to date, `4` behind (or unconfirmed), `1` a
-failed row, `3` service down.
+[Commands](#commands): `0` up to date, `4` behind, `5` a `pending` release
+that was flipped to but never confirmed, `1` a failed row, `3` service down.
 
 To catch a lost webhook and deploy anyway:
 
     flipd check app >/dev/null; [ $? -eq 4 ] && flipd run app
 
-`run` is a forced build, so a catch-up ignores `WATCH` and `IGNORE`.
-Exit `4` also covers a `pending` release that was flipped to but never
-confirmed, so an unattended catch-up rebuilds over it and the failed deploy
-is never looked at. If that matters on a repo, check `flipd status` first.
+`run` is a forced build, so a catch-up ignores `WATCH` and `IGNORE`. It does
+not fire on `5`: a `pending` release is a failed deploy waiting to be looked
+at, and rebuilding over it unattended is how it never is. `5` outranks `4`,
+so a repo that is both behind and pending stays put until someone runs
+`flipd rollback` or `flipd run` by hand.
 
 ## Where things live
 
@@ -154,12 +155,12 @@ For a repo named `app`:
 | `/etc/flipd/env/app.build`, `app.deploy` | extra environment for `BUILD` and `DEPLOY`, written by `flipd env` |
 | `/etc/flipd/accounts/<host>.conf` | an account, written by `flipd account add`; root-only, read by `add` and `account list`; the service never does |
 | `/var/lib/flipd/app/key`, `key.pub` | the deploy key `add` generates |
-| `/var/lib/flipd/app/git/` | the bare clone, made on the first run, not by `add` |
+| `/var/lib/flipd/app/git/` | the bare clone, made on the first run, not by `add`. flipd's git runs with `HOME=/var/lib/flipd` and does not read `/etc/gitconfig`, so a git setting meant for flipd goes in `/var/lib/flipd/.gitconfig` |
 | `/var/lib/flipd/app/releases/<id>/` | one git worktree per build; `<id>` is the attempt's UTC timestamp plus the short sha |
 | `/var/lib/flipd/app/current` | a symlink to the release most recently flipped to, confirmed or not |
 | `/var/lib/flipd/app/state.json` | which release is live, previous and pending |
 | `/var/log/flipd/app/<id>.log` | one attempt log per build or rollback |
-| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries the delivery id, so a delivery that matched a repo can be found here with `grep` |
+| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries the delivery id, so a delivery that matched a repo can be found here with `grep`; one that was ignored (a tag, a deleted branch, no matching repo) carries it in `journalctl -u flipd` instead |
 
 flipd writes nowhere else. Getting the release to wherever it is served from
 is `DEPLOY`'s job: see [docs/deploy-recipes.md](docs/deploy-recipes.md).
@@ -296,7 +297,7 @@ skimmed when it is not.
 | `flipd serve` | run by systemd as `flipd` | runs until `SIGTERM`/`SIGINT` |
 | `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem, or, with an account, the forge refused a call (the uploaded deploy key and its local files are undone; a webhook this run already created is left in place on the forge and named in the output); `2` usage |
 | `flipd account add <host> --kind github\|forgejo\|gitea [--api URL] [--ssh-port N] < token-file` / `account list` / `account remove <host>` | sudo | `0` done; `1` bad host/kind/token, the account already exists or does not, or the host key could not be scanned; `2` usage |
-| `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the webhook recipe (Payload URL, secret location, `gh api` pipeline) with the current `PUBLIC_HOST`, so it can be read again after `--host` |
+| `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `5` pass, but a release is `pending` — flipped to and never confirmed — which outranks `4`; `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the webhook recipe (Payload URL, secret location, `gh api` pipeline) with the current `PUBLIC_HOST`, so it can be read again after `--host` |
 | `flipd run <name>` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down |
 | `flipd rollback <name>` | group (or sudo) | same as `run`, printing `queued rollback of <name> to <sha>` or `not queued: <reason>` |
 | `flipd status [name]` | group (or sudo) | `0` printed (the activity column falls back to `service down` if the socket is merely unreachable); `1` no such repo / nothing configured, **or** a bare `EACCES` if you're not in the `flipd` group — see [Permissions](#permissions) |
