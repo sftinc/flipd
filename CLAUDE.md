@@ -21,7 +21,7 @@ everywhere.
 | `install.sh` | Root-only installer. See the rule below — **never run it.** |
 | `docs/` | One file per reader question — agent setup, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
 | `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
-| `SERVER.md` | Boxes: address, access, hostnames. Git-ignored — **this repo is public.** Read server details from there; never copy them into a tracked file. |
+| `SERVER.md` | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up. |
 | `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
 
 ## Commands
@@ -105,19 +105,26 @@ silently building over an unconfirmed flip is how a broken deploy gets buried.
 typed `StateError`, never degraded to an empty state: empty means "no releases",
 which would make the next prune delete everything.
 
-## The test server
+## Servers
 
-There is a live box for exercising `install.sh` and the real webhook path. It
-runs the same repo, deployed by flipd itself, so `/opt/flipd` (the running
-service) and `/var/lib/flipd/flipd/` (the deployed release) are two different
-checkouts — upgrading the service is `git -C /opt/flipd pull && systemctl
-restart flipd`, which no deploy does for you.
+Any box this repo is exercised on — a test server, a staging box, whatever you
+have — is described in `SERVER.md` in the root, which is git-ignored because
+**this repository is public.** Its address, access details, hostnames and quirks
+go there and never into a tracked file; they were in this file until 2026-09-07.
 
-**Its address, access details and public hostname live in `SERVER.md` in the
-repo root, which is git-ignored.** Read them from there. Anything new you learn
-about a box — an address, a key, a hostname, a port, a quirk — is written there
-too, and never into a tracked file: this repository is public, and these details
-were in this file until 2026-09-07.
+**If `SERVER.md` is not present, no box is set up.** Do not infer one, do not go
+looking for an address in the git history, and do not create one without being
+asked. Everything in this repo can be developed and tested locally — `npm test`
+needs no server, and `install.sh` is verified statically (see the rule above).
 
-Confirm a change on the box behaviourally, not by reading config: `caddy
-validate` proves syntax, not that a field path matched.
+Two things hold for any box running flipd, and are worth knowing before you
+touch one:
+
+- **The service and a deployment are different checkouts.** `/opt/flipd` is the
+  running service; each repo flipd deploys lives under `/var/lib/flipd/<name>/`.
+  If a box deploys flipd with flipd, those are two copies of this repository,
+  and upgrading the service is `git -C /opt/flipd pull && systemctl restart
+  flipd` — which no deploy does for you, and which needs `flipd status` idle
+  first, or the restart kills a running build and drops the queue.
+- **Confirm a change behaviourally, not by reading config.** `caddy validate`
+  proves syntax, not that a field path matched.
