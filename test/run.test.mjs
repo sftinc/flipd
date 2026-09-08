@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { makePrefix, makeSourceRepo, writeRepoConf } from './helpers.mjs';
+import { makePrefix, makeSourceRepo, writeRepoConf, tmpdir } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
 import { readState, writeState } from '../lib/state.mjs';
 import { runEntry, runOnFailure, resolveRollbackTarget } from '../lib/run.mjs';
@@ -669,4 +669,83 @@ test('a submodule URL with userinfo is redacted in the attempt log, both streame
   const log = await fs.readFile((await t.state()).last.log, 'utf8');
   assert.doesNotMatch(log, /tokenabc123/, 'the credential must not reach the attempt log');
   assert.match(log, /\*\*\*@127\.0\.0\.1:1/, 'the redacted form of the url is still visible');
+});
+
+test('STOP exit 0 runs after BUILD and before the flip, then flip and deploy proceed', async () => {
+  const t = await setup({ extra: { STOP: 'echo stopped > "$DEPLOY_RELEASE_DIR/stopped.marker"' } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const s = await t.state();
+  assert.ok(s.live);
+  assert.equal(await t.current(), s.live);
+  const log = await fs.readFile(s.last.log, 'utf8');
+  const at = (re) => { const m = re.exec(log); assert.ok(m, `${re} in log`); return m.index; };
+  assert.ok(at(/step build done/) < at(/step stop\n/), 'stop starts after build finished');
+  assert.ok(at(/step stop done/) < at(/step flip\n/), 'flip starts after stop finished');
+  assert.match(log, /stop: echo stopped/);
+  assert.match(log, /stop exit 0/);
+  assert.match(log, /exit codes: build=0 stop=0 deploy=0/);
+});
+
+test('STOP non-zero is stop failed: nothing flipped, no pending, release kept, ON_FAILURE told', async () => {
+  const marker = path.join(await tmpdir('flipd-stop'), 'notified.txt');
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = await t.state();
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', STOP: 'echo still busy >&2; exit 3', DEPLOY: 'echo deployed > deployed.marker', ON_FAILURE: `echo "$DEPLOY_OUTCOME" > ${marker}` });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'stop failed');
+  const s = await t.state();
+  assert.equal(s.live, good.live);
+  assert.equal(s.previous, good.previous);
+  assert.equal(s.pending, null);
+  assert.equal(await t.current(), good.live);
+  assert.equal(s.last.outcome, 'stop failed');
+  assert.ok(s.last.release && s.last.release !== good.live, 'the built release is recorded');
+  await fs.stat(path.join(t.p.repoDir('r'), 'releases', s.last.release));   // kept for inspection
+  await assert.rejects(fs.stat(path.join(t.p.repoDir('r'), 'releases', s.last.release, 'deployed.marker')), 'DEPLOY never ran');
+  const log = await fs.readFile(s.last.log, 'utf8');
+  assert.match(log, /still busy/);
+  assert.match(log, /stop exit 3/);
+  assert.match(log, /outcome: stop failed  STOP exited 3/);
+  assert.match(log, /next: fix, push, or flipd run r/);
+  assert.doesNotMatch(log, /step flip/);
+  assert.equal((await fs.readFile(marker, 'utf8')).trim(), 'stop failed');
+  assert.match(await t.events(), /finished .* stop failed /);
+});
+
+test('STOP past TIMEOUT is stop failed with the timeout recorded, and nothing flipped', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = (await t.state()).live;
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', STOP: 'sleep 30', DEPLOY: 'true', TIMEOUT: '1' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'stop failed');
+  const s = await t.state();
+  assert.equal(s.live, good);
+  assert.equal(s.pending, null);
+  assert.equal(await t.current(), good);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /stop exit timeout after 1s/);
+});
+
+test('no STOP key: no stop step in the log', async () => {
+  const t = await setup();
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const log = await fs.readFile((await t.state()).last.log, 'utf8');
+  assert.doesNotMatch(log, /step stop/);
+  assert.match(log, /exit codes: build=0 deploy=0/);
+});
+
+test('a malformed deploy env file with STOP set is stop failed, not deploy failed, and nothing is flipped', async () => {
+  const t = await setup({ extra: { STOP: 'true' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = (await t.state()).live;
+  await t.src.commit({ 'mta/q.mjs': '9' });
+  await fs.writeFile(t.p.envFile('r', 'deploy'), 'garbage\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'stop failed');
+  const s = await t.state();
+  assert.equal(s.pending, null);
+  assert.equal(s.live, good);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /outcome: stop failed  env file: line 1/);
 });
