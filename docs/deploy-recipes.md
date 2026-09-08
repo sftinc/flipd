@@ -213,6 +213,21 @@ exposes a drain endpoint, replace the `kill` with the request that starts
 the drain and the `is-active` check with one that reports idle, and
 re-enable in the trap and before the final `exit 1`.
 
+This also assumes the unit is not `Restart=always`. With that policy,
+systemd restarts the process as soon as `SIGTERM` reaches it, `is-active`
+never goes false, and `STOP` runs the full 900-second poll and then exits
+`1` on every attempt — the deploy can never proceed. Adapt it the same way
+as the drain-endpoint case above: poll the application's own idle signal
+rather than unit liveness, or take the unit out of systemd's restart
+policy for the duration of the drain.
+
+The `is-active` guard at the top of the script is not only there for
+`set -e`: it is what makes a recovery rollback safe. Once a `STOP` has
+succeeded, the unit is down, and the rollback that follows a failed
+`DEPLOY` runs `STOP` again before it flips back — that run has to see the
+unit already stopped and exit `0`, not fail. Remove the guard and a
+recovery rollback fails at `stop failed` instead of getting the site back.
+
 On the overrun path, `systemctl start` is a no-op if the unit's process is
 still alive — it restarts nothing that is already running. It only helps
 an app whose `SIGTERM` handler stops taking new work before the process

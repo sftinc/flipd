@@ -60,6 +60,13 @@ Its job is to let the process that is serving now finish what it is doing.
   than guessing where to run.
 - **It always runs when set**, first deploy included. Exit `0` when there is
   nothing to stop; `systemctl stop` on an inactive unit already does.
+- **Once `STOP` exits `0`, the application is stopped, and stays stopped
+  until `DEPLOY` starts it again.** Before this phase existed, the process
+  serving now kept serving through anything that happened before `DEPLOY`;
+  with `STOP` in the loop, a `DEPLOY` that then fails, or flipd itself being
+  killed between the two, is an outage instead. The recovery path still
+  works: a rollback runs the target release's `DEPLOY`, which starts the
+  application again.
 - **flipd never touches the served process.** On `TIMEOUT`, and when the
   service itself is restarted mid-attempt, flipd kills the `STOP` command's
   own process group — `SIGTERM`, then `SIGKILL` ten seconds later — and
