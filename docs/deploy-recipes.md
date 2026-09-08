@@ -176,6 +176,48 @@ directory, a cron job, a `node --watch`), `DEPLOY` can be a bare check:
 writes has it commented out as a placeholder, and `flipd check` fails with
 `DEPLOY is required` until it is filled in.
 
+## Draining before the switch
+
+`STOP` runs before the flip and asks the running process to finish. The
+recipe is: tell it to stop taking new work, wait for it to go idle or
+exit, and give up — with it still serving — well inside `TIMEOUT`.
+
+    STOP=sudo /usr/local/bin/app-drain
+
+`/usr/local/bin/app-drain`, `root:root`, mode `0755`, for a systemd unit
+whose process finishes in-flight work on `SIGTERM`:
+
+    #!/bin/sh
+    set -eu
+    # Restore service if flipd cuts this script off (TIMEOUT, or a restart
+    # of flipd itself). flipd sends SIGTERM and waits ten seconds.
+    trap 'systemctl start app.service; exit 1' TERM
+    systemctl kill --signal=TERM app.service
+    # 15 minutes, under the 20-minute TIMEOUT: leave room for the trap.
+    i=0
+    while [ $i -lt 900 ]; do
+      systemctl is-active --quiet app.service || exit 0
+      sleep 1; i=$((i+1))
+    done
+    echo "app.service still busy after 900s; leaving it running" >&2
+    systemctl start app.service   # it is still up; make sure it takes work again
+    exit 1
+
+`systemctl stop` is not used because it has its own stop timeout and kills
+the unit when that expires, which is the one thing this phase exists to
+avoid. Sending the signal and polling keeps the decision here. If the app
+exposes a drain endpoint, replace the `kill` with the request that starts
+the drain and the `is-active` check with one that reports idle, and
+re-enable in the trap and before the final `exit 1`.
+
+The script exits `1` with the process still serving, so a `stop failed`
+leaves the site up. To deploy anyway, `flipd run <name> --now`.
+
+Keep the script outside the repo, as here, and the directory `STOP` runs
+in never matters. A script inside the repo runs from the release that is
+current — the code the running process came from — so the first deploy
+after adding one needs `--now`.
+
 ## Health checks
 
 Every recipe above ends by asking the service whether it is up. That line is
@@ -194,10 +236,10 @@ it green, and nothing notices until a person does.
 ## Notifying on failure
 
 `ON_FAILURE` runs after any outcome other than `ok` and `skipped`, so it fires
-for a failed fetch (a revoked key), a failed build, a failed deploy, and a
-build cut off by a restart. It gets the deploy environment plus
-`DEPLOY_OUTCOME` and `DEPLOY_LOG`, has 60 seconds, and its own result changes
-nothing.
+for a failed fetch (a revoked key), a failed build, a `STOP` that would not
+finish, a failed deploy, and a build cut off by a restart. It gets the deploy
+environment plus `DEPLOY_OUTCOME` and `DEPLOY_LOG`, has 60 seconds, and its
+own result changes nothing.
 
     ON_FAILURE=curl -fsS -m 10 -d "$DEPLOY_NAME: $DEPLOY_OUTCOME at ${DEPLOY_SHA:-?}  see $DEPLOY_LOG" https://ntfy.sh/<topic>
 

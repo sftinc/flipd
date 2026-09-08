@@ -7,7 +7,8 @@ no npm dependencies.
 ## How it works
 
 A push arrives as a webhook. flipd fetches, checks out a fresh worktree, runs
-`BUILD` in it, and only then flips: `current` is a symlink swapped by `rename()`
+`BUILD` in it, runs `STOP` if there is one, so the process serving now can
+finish its work, and only then flips: `current` is a symlink swapped by `rename()`
 over a temp link, so it changes atomically and a build that fails never touches
 the live release. `DEPLOY` runs after the flip, and its exit code is the whole
 verdict — zero confirms the release, anything else leaves it `pending` and

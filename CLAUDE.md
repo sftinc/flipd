@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-flipd turns a push into fetch → build → flip → deploy on a server you own.
+flipd turns a push into fetch → build → stop → flip → deploy on a server you own.
 Single file per module, Node 20+, ESM, **zero npm dependencies** — keep it that way.
 
 ## Map
@@ -94,7 +94,7 @@ same repo can ever interleave:
   its forge is matched by its numeric id instead, scoped to the same host when
   both hosts are known.
 - **`lib/run.mjs`** is the controller and the file to read first. Phases are
-  `fetch → checkout → build → flip → deploy`; a failure before `flip` leaves the
+  `fetch → checkout → build → stop → flip → deploy`; a failure before `flip` leaves the
   live release untouched.
 
 **The flip is the heart of it.** `current` is a symlink swapped by `rename()` over

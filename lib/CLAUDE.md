@@ -56,4 +56,6 @@ the never-print rule and the zero-dependency rule bind every file here.
 The `phase` variable classifies unexpected errors, `step()`/`done()` write the
 attempt log, and `state.pending` is set only inside `flip()`. Any new phase needs
 all three, plus a decision about whether a failure in it leaves the live release
-intact — which is the property `test/run.test.mjs` exists to pin.
+intact — which is the property `test/run.test.mjs` exists to pin. STOP (2026-09)
+is the worked example: `phase = 'stop'`, `step('stop')`/`done('stop')`, and a
+failure that leaves live intact because it lands before `flip()`.

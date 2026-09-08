@@ -1,4 +1,4 @@
-# BUILD and DEPLOY
+# BUILD, STOP and DEPLOY
 
 ## The contract
 
@@ -20,7 +20,7 @@
   same release. It gets the `DEPLOY` and `ROOT` recorded when that release was
   built, not the ones in the conf now, so editing `DEPLOY` affects the next
   build and not a rollback to an old one.
-- It has `TIMEOUT` seconds (default 1200) of its own, separate from `BUILD`.
+- It has `TIMEOUT` seconds (default 1200) of its own, separate from `BUILD` and `STOP`.
 - Everything it prints goes to the attempt log, with env-file values masked.
   Secrets come from `sudo flipd env <name> deploy --set K=V`, never from the
   conf line, which the attempt log quotes in full.
@@ -37,9 +37,52 @@
   copy to that place is made. The copy-out recipes never hit this;
   anything served from `current` does.
 
+## STOP
+
+`STOP` is optional. When set, it runs after `BUILD` has passed and before
+`current` is flipped, and on a rollback before the flip, with no `BUILD`.
+Its job is to let the process that is serving now finish what it is doing.
+
+- **Exit `0` means the flip may go ahead.** Anything else, including
+  `TIMEOUT`, is `stop failed`: nothing is flipped, and `current`, live,
+  previous and pending are exactly as they were when the attempt started.
+  The built release is kept like any failed attempt, `ON_FAILURE` fires,
+  and a push builds again next time. If the attempt started from `PENDING`
+  (a `flipd run` or `flipd rollback` is allowed to), it is still `PENDING`.
+- **It runs in the release `current` points at**, under that release's
+  `ROOT`, so a drain script kept in the repo is the copy that matches the
+  process it is stopping. On a first deploy there is no `current`, and it
+  runs in the new release instead. `DEPLOY_CURRENT_RELEASE_DIR` and
+  `DEPLOY_CURRENT_RELEASE_ID` name that release; `DEPLOY_RELEASE_DIR` and
+  the rest name the one the attempt is moving to, as they will for `DEPLOY`
+  a moment later. A `current` that points at a release `state.json` no
+  longer lists is `stop failed`, with a detail line naming the id, rather
+  than guessing where to run.
+- **It always runs when set**, first deploy included. Exit `0` when there is
+  nothing to stop; `systemctl stop` on an inactive unit already does.
+- **flipd never touches the served process.** On `TIMEOUT`, and when the
+  service itself is restarted mid-attempt, flipd kills the `STOP` command's
+  own process group — `SIGTERM`, then `SIGKILL` ten seconds later — and
+  nothing else. A script cut off mid-drain can leave the application drained
+  but not stopped, and flipd will not put it back. So a `STOP` script must:
+  bound its own wait below `TIMEOUT`; leave the process serving before it
+  exits non-zero; trap `SIGTERM` and re-enable within the ten seconds; and
+  if it goes through `sudo`, make sure the root helper exits on `SIGTERM`,
+  because the `SIGKILL` reaches `sudo` only, and a helper that lingers holds
+  the attempt open with it.
+- **`flipd run <name> --now` and `flipd rollback <name> --now` skip it** for
+  that one attempt and say so in the log. That is the way out when a process
+  will not finish and the work is not worth waiting for. A webhook push never
+  skips it.
+- It uses the deploy env file and `TIMEOUT` on its own clock, and is not
+  recorded per release: the conf's current `STOP` addresses the process
+  running now, and an edit applies to the next attempt. A deploy env file
+  that fails to parse fails `STOP` the way it fails `DEPLOY`, with the
+  outcome `stop failed`.
+
 ## What BUILD and DEPLOY see
 
-Both run as the `flipd` user under `/bin/sh -c`, in `releases/<id>/<ROOT>`,
+All three run as the `flipd` user under `/bin/sh -c`, in `releases/<id>/<ROOT>`,
 with their output going to the attempt log. The environment is built from
 scratch, not inherited from the service:
 
@@ -54,8 +97,10 @@ scratch, not inherited from the service:
 | `DEPLOY_PREVIOUS_SHA` | the commit that was live when this attempt started, or empty |
 | `DEPLOY_RELEASE_DIR` | absolute path of `releases/<id>` |
 | `DEPLOY_RELEASE_ID` | the release id |
+| `DEPLOY_CURRENT_RELEASE_DIR` | `STOP` only: absolute path of the release `current` points at, or empty on a first deploy |
+| `DEPLOY_CURRENT_RELEASE_ID` | `STOP` only: that release's id, or empty |
 | `DEPLOY_ATTEMPT_ID` | the attempt id, which names the log file |
-| `DEPLOY_OUTCOME` | `ON_FAILURE` only: `fetch failed`, `checkout failed`, `build failed`, `deploy failed` or `interrupted` |
+| `DEPLOY_OUTCOME` | `ON_FAILURE` only: `fetch failed`, `checkout failed`, `build failed`, `stop failed`, `deploy failed` or `interrupted` |
 | `DEPLOY_LOG` | `ON_FAILURE` only: path of the attempt log |
 
 Then every line of the phase's env file, set with

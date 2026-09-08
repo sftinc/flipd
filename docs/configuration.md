@@ -14,14 +14,15 @@ logged to journald and skipped, and the other repos are unaffected. `REPO`,
 | `BRANCH` | `main` | The branch to follow. A push to any other branch is answered `ignored`. |
 | `ROOT` | `.` | The directory inside the checkout that `BUILD` and `DEPLOY` run in. Relative, no `..`. It does not change where flipd puts files. |
 | `BUILD` | required | Run by `/bin/sh -c` in the fresh checkout. A non-zero exit is `build failed`: nothing is flipped and the live release is untouched. |
+| `STOP` | none | Run after `BUILD` passes and before the flip, to let the running process finish its work. Exit `0` means it is safe to switch; anything else, including hitting `TIMEOUT`, is `stop failed`: nothing is flipped and `current`, live, previous and pending are exactly as they were. Runs in the release `current` points at (the target on a first deploy), so a script kept in the repo is the copy that matches the process being stopped — which means enabling a relative `STOP` needs the script already present in the current release; the first deploy after adding one is `flipd run <name> --now`. Runs on rollback too. See [build-and-deploy.md](build-and-deploy.md#stop) and [deploy-recipes.md](deploy-recipes.md#draining-before-the-switch). |
 | `DEPLOY` | required | Run after `current` is flipped to the new release. Exit `0` confirms the release; anything else is `deploy failed`. Run again on rollback. See [deploy-recipes.md](deploy-recipes.md). |
 | `ON_FAILURE` | none | Run after every outcome other than `ok` and `skipped`, capped at 60 seconds, in `/var/lib/flipd/<name>`, with `DEPLOY_OUTCOME` and `DEPLOY_LOG` added to the deploy environment. Its own exit code is one `events.log` line and changes nothing. |
 | `WATCH` | everything | Space-separated globs. A push whose changed files (since the live release) match none of them is `skipped`. |
 | `IGNORE` | none | Globs subtracted from `WATCH`: a changed file matching one does not count. |
-| `TIMEOUT` | `1200` | Seconds, applied to `BUILD` and to `DEPLOY` separately. A command still running at the limit is killed and the attempt fails. |
+| `TIMEOUT` | `1200` | Seconds, applied to `BUILD`, `STOP` and `DEPLOY` separately. A command still running at the limit is killed and the attempt fails. |
 | `KEY` | `/var/lib/flipd/<name>/key` | The private key for the fetch. `add --key` sets it, for a machine user's key shared across repos. A deploy key is accepted by one repository only, so a repo whose submodule is a second private repository needs `--key` with a machine user's key that can read both. |
 | `BUILD_ENV_FILE` | `/etc/flipd/env/<name>.build` | Where `BUILD`'s extra environment is read from. |
-| `DEPLOY_ENV_FILE` | `/etc/flipd/env/<name>.deploy` | The same for `DEPLOY` and `ON_FAILURE`. |
+| `DEPLOY_ENV_FILE` | `/etc/flipd/env/<name>.deploy` | The same for `STOP`, `DEPLOY` and `ON_FAILURE`. |
 | `HOOK_HOST` | written by `add` | The `PUBLIC_HOST` at the time `add` ran. `check` prints the webhook recipe with `PUBLIC_HOST` if it is set, otherwise this. |
 
 Globs: `*` matches anything except `/`, `**` anything including `/`, `**/`
