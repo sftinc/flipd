@@ -80,7 +80,7 @@ Its job is to let the process that is serving now finish what it is doing.
   that fails to parse fails `STOP` the way it fails `DEPLOY`, with the
   outcome `stop failed`.
 
-## What BUILD and DEPLOY see
+## What BUILD, STOP and DEPLOY see
 
 All three run as the `flipd` user under `/bin/sh -c`, in `releases/<id>/<ROOT>`,
 with their output going to the attempt log. The environment is built from

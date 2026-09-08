@@ -12,7 +12,7 @@ Getting the release reachable from outside is the other half, and it is not a
 
 The reference for every conf key and every variable is in
 [The repo file](configuration.md#the-repo-file) and
-[What BUILD and DEPLOY see](build-and-deploy.md#what-build-and-deploy-see).
+[What BUILD, STOP and DEPLOY see](build-and-deploy.md#what-build-stop-and-deploy-see).
 
 ## Getting root
 
@@ -192,6 +192,9 @@ whose process finishes in-flight work on `SIGTERM`:
     # Restore service if flipd cuts this script off (TIMEOUT, or a restart
     # of flipd itself). flipd sends SIGTERM and waits ten seconds.
     trap 'systemctl start app.service; exit 1' TERM
+    # Nothing to stop: exit 0 before the kill, whose own non-zero exit on an
+    # inactive unit would otherwise abort the script under set -e.
+    systemctl is-active --quiet app.service || exit 0
     systemctl kill --signal=TERM app.service
     # 15 minutes, under the 20-minute TIMEOUT: leave room for the trap.
     i=0
@@ -209,6 +212,12 @@ avoid. Sending the signal and polling keeps the decision here. If the app
 exposes a drain endpoint, replace the `kill` with the request that starts
 the drain and the `is-active` check with one that reports idle, and
 re-enable in the trap and before the final `exit 1`.
+
+On the overrun path, `systemctl start` is a no-op if the unit's process is
+still alive — it restarts nothing that is already running. It only helps
+an app whose `SIGTERM` handler stops taking new work before the process
+itself exits; for anything else, adapt this line to whatever un-drains
+your app rather than trust it as written.
 
 The script exits `1` with the process still serving, so a `stop failed`
 leaves the site up. To deploy anyway, `flipd run <name> --now`.
