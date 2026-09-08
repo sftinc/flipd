@@ -835,3 +835,65 @@ test('an env file cannot set DEPLOY_CURRENT_RELEASE_ID either', async () => {
   assert.equal((await fs.readFile(out, 'utf8')).trim(), '');
   assert.match(await fs.readFile((await t.state()).last.log, 'utf8'), /stop env: refused DEPLOY_CURRENT_RELEASE_ID/);
 });
+
+test('STOP failing on a manual run started from pending leaves pending as it was, with the rollback line', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = (await t.state()).live;
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', DEPLOY: 'exit 1' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'deploy failed');
+  const pending = (await t.state()).pending;
+  assert.ok(pending);
+  // The operator's recovery attempt: a manual run, allowed from pending, whose STOP refuses.
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', STOP: 'exit 1', DEPLOY: 'true' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'stop failed');
+  const s = await t.state();
+  assert.equal(s.pending, pending, 'pending is unchanged, not cleared and not moved');
+  assert.equal(s.live, good);
+  assert.equal(await t.current(), pending);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /next: flipd rollback r/);
+});
+
+test('STOP failing on a rollback started from pending leaves pending as it was', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = (await t.state()).live;
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', DEPLOY: 'exit 1' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const pending = (await t.state()).pending;
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', STOP: 'exit 1', DEPLOY: 'true' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'rollback', name: 'r', target: good }), 'stop failed');
+  const s = await t.state();
+  assert.equal(s.pending, pending);
+  assert.equal(s.live, good);
+  assert.equal(await t.current(), pending);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /next: flipd rollback r/);
+});
+
+test('shutdown during STOP is interrupted with current and state untouched', async () => {
+  const t = await setup({ extra: { STOP: 'true' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = await t.state();
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', STOP: 'sleep 30', DEPLOY: 'true' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  const ac = new AbortController();
+  t.ctx.signal = ac.signal;
+  // The clone already exists, so fetch, checkout and a `true` BUILD are quick,
+  // but not instantly quick on a loaded machine. 3 s is comfortably after them
+  // and comfortably inside STOP's 30 s sleep: the abort must land in STOP, or
+  // this test silently starts testing an interrupted checkout instead.
+  setTimeout(() => ac.abort(), 3000);
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'interrupted');
+  const s = await t.state();
+  assert.equal(s.live, good.live);
+  assert.equal(s.pending, null);
+  assert.equal(await t.current(), good.live);
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /stop interrupted by service shutdown/);
+});
