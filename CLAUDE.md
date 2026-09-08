@@ -5,6 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 flipd turns a push into fetch → build → stop → flip → deploy on a server you own.
 Single file per module, Node 20+, ESM, **zero npm dependencies** — keep it that way.
 
+# Rule #1: Keep It Simple, Stupid (KISS)
+
+Simplicity beats cleverness. When in doubt, write the boring version.
+
+- Solve the problem that exists now, not one that might exist later.
+- Search for an existing helper or pattern before writing a new one.
+- No extra layers (factories, wrappers, interfaces, etc.) unless there are two real callers today.
+
+Before calling it done: Can this be less code? Is anything here not needed yet? Would someone new get it without explanation?
+
 ## Map
 
 Each directory has its own CLAUDE.md with the detail for that layer. Read the one
@@ -134,13 +144,3 @@ flipd` — which no deploy does for you, and which needs `flipd status` idle
   first, or the restart kills a running build and drops the queue.
 - **Confirm a change behaviourally, not by reading config.** `caddy validate`
   proves syntax, not that a field path matched.
-
-## Rule #1: Keep It Simple, Stupid (KISS)
-
-Simplicity beats cleverness. When in doubt, write the boring version.
-
-- Solve the problem that exists now, not one that might exist later.
-- Search for an existing helper or pattern before writing a new one.
-- No extra layers (factories, wrappers, interfaces) unless there are two real callers today.
-
-Before calling it done: Can this be less code? Is anything here not needed yet? Would someone new get it without explanation?
