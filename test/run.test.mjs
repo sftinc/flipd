@@ -749,3 +749,89 @@ test('a malformed deploy env file with STOP set is stop failed, not deploy faile
   assert.equal(s.live, good);
   assert.match(await fs.readFile(s.last.log, 'utf8'), /outcome: stop failed  env file: line 1/);
 });
+
+test('STOP runs in the release current points at, under its recorded ROOT, and names both releases', async () => {
+  // Release 1 has ROOT=mta. Release 2 changes ROOT to `.`, so the two cwds
+  // differ in a way the STOP script can report: on the second attempt, STOP
+  // must run in release 1's `mta`, not in release 2's root.
+  const t = await setup({ extra: { ROOT: 'mta', STOP: 'true' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const first = (await t.state()).live;
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  const out = path.join(t.p.repoDir('r'), 'stop-cwd.txt');
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, ROOT: '.', BUILD: 'true', STOP: `printf '%s\\n%s\\n%s\\n%s\\n' "$PWD" "$DEPLOY_CURRENT_RELEASE_ID" "$DEPLOY_CURRENT_RELEASE_DIR" "$DEPLOY_RELEASE_ID" > ${out}`, DEPLOY: 'true' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const s = await t.state();
+  const [cwd, curId, curDir, targetId] = (await fs.readFile(out, 'utf8')).trim().split('\n');
+  const firstDir = path.join(t.p.repoDir('r'), 'releases', first);
+  assert.equal(await fs.realpath(cwd), await fs.realpath(path.join(firstDir, 'mta')));
+  assert.equal(curId, first);
+  assert.equal(curDir, firstDir);
+  assert.equal(targetId, s.live);
+  assert.notEqual(targetId, first);
+});
+
+test('first deploy: STOP runs in the target release with the DEPLOY_CURRENT_* variables empty', async () => {
+  const out = path.join(await tmpdir('flipd-stop'), 'first.txt');
+  const t = await setup({ extra: { STOP: `printf '%s|%s|%s\\n' "$PWD" "$DEPLOY_CURRENT_RELEASE_ID" "$DEPLOY_CURRENT_RELEASE_DIR" > ${out}` } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const s = await t.state();
+  const [cwd, curId, curDir] = (await fs.readFile(out, 'utf8')).trim().split('|');
+  assert.equal(await fs.realpath(cwd), await fs.realpath(path.join(t.p.repoDir('r'), 'releases', s.live)));
+  assert.equal(curId, '');
+  assert.equal(curDir, '');
+});
+
+test('current pointing at a release state does not know is stop failed, with nothing flipped', async () => {
+  const t = await setup({ extra: { STOP: 'true' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = (await t.state()).live;
+  // Forge the situation: a release directory nobody registered, and current on it.
+  const ghost = path.join(t.p.repoDir('r'), 'releases', 'ghost');
+  await fs.mkdir(ghost, { recursive: true });
+  const cur = path.join(t.p.repoDir('r'), 'current');
+  await fs.rm(cur);
+  await fs.symlink('releases/ghost', cur);
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'stop failed');
+  const s = await t.state();
+  assert.equal(s.live, good);
+  assert.equal(s.pending, null);
+  assert.equal(await t.current(), 'ghost', 'current is left exactly as found');
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /outcome: stop failed  current points at ghost/);
+});
+
+test('rollback runs STOP before the flip, in the release current points at (the pending one)', async () => {
+  const t = await setup({ extra: { STOP: 'true' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const good = (await t.state()).live;
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', STOP: 'true', DEPLOY: 'exit 1' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'deploy failed');
+  const pending = (await t.state()).pending;
+  assert.ok(pending);
+  const out = path.join(t.p.repoDir('r'), 'rb-stop.txt');
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', STOP: `printf '%s|%s\\n' "$DEPLOY_CURRENT_RELEASE_ID" "$DEPLOY_RELEASE_ID" > ${out}`, DEPLOY: 'true' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'rollback', name: 'r', target: good }), 'ok');
+  const [curId, targetId] = (await fs.readFile(out, 'utf8')).trim().split('|');
+  assert.equal(curId, pending, 'STOP addressed the pending release, whose process is the one running');
+  assert.equal(targetId, good);
+  const s = await t.state();
+  assert.equal(s.live, good);
+  assert.equal(s.pending, null);
+  const log = await fs.readFile(s.last.log, 'utf8');
+  const at = (re) => { const m = re.exec(log); assert.ok(m, `${re} in log`); return m.index; };
+  assert.ok(at(/step stop done/) < at(/step flip\n/));
+});
+
+test('an env file cannot set DEPLOY_CURRENT_RELEASE_ID either', async () => {
+  const out = path.join(await tmpdir('flipd-stop'), 'refused.txt');
+  const t = await setup({ extra: { STOP: `echo "$DEPLOY_CURRENT_RELEASE_ID" > ${out}` } });
+  await fs.writeFile(t.p.envFile('r', 'deploy'), 'DEPLOY_CURRENT_RELEASE_ID=forged\n');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  assert.equal((await fs.readFile(out, 'utf8')).trim(), '');
+  assert.match(await fs.readFile((await t.state()).last.log, 'utf8'), /stop env: refused DEPLOY_CURRENT_RELEASE_ID/);
+});
