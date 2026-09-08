@@ -595,3 +595,50 @@ test('a push during shutdown is refused with 503, not answered 202 for work that
     await closing;
   }
 });
+
+test('now on run and rollback reaches the worker and skips STOP; without it STOP refuses', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', STOP: 'exit 1', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r' }), { ok: true, queued: true });
+    await waitIdle(p);
+    let s = await readState(p.repoDir('r'));
+    assert.equal(s.last.outcome, 'stop failed');
+    assert.equal(s.live, null);
+
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r', now: true }), { ok: true, queued: true });
+    await waitIdle(p);
+    s = await readState(p.repoDir('r'));
+    assert.equal(s.last.outcome, 'ok');
+    const first = s.live;
+    assert.ok(first);
+
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r', now: true }), { ok: true, queued: true });
+    await waitIdle(p);
+    s = await readState(p.repoDir('r'));
+    assert.equal(s.previous, first);
+
+    const refused = await sendCommand(p.sock, { cmd: 'rollback', name: 'r' });
+    assert.deepEqual(refused, { ok: true, queued: true, target: first });
+    await waitIdle(p);
+    s = await readState(p.repoDir('r'));
+    assert.equal(s.last.outcome, 'stop failed');
+    assert.notEqual(s.live, first);
+
+    const rb = await sendCommand(p.sock, { cmd: 'rollback', name: 'r', now: true });
+    assert.deepEqual(rb, { ok: true, queued: true, target: first });
+    await waitIdle(p);
+    s = await readState(p.repoDir('r'));
+    assert.equal(s.live, first);
+
+    const events = await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
+    assert.match(events, /queued manual --now\n/);
+    assert.match(events, /rollback queued, target \S+ --now\n/);
+  } finally {
+    await svc.close();
+  }
+});

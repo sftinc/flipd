@@ -897,3 +897,34 @@ test('shutdown during STOP is interrupted with current and state untouched', asy
   assert.equal(await t.current(), good.live);
   assert.match(await fs.readFile(s.last.log, 'utf8'), /stop interrupted by service shutdown/);
 });
+
+test('--now on a manual run and on a rollback skips STOP, says so, and flips', async () => {
+  const t = await setup({ extra: { STOP: 'exit 1' } });
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r', now: true }), 'ok');
+  let s = await t.state();
+  const first = s.live;
+  let log = await fs.readFile(s.last.log, 'utf8');
+  assert.match(log, /stop skipped: --now/);
+  assert.doesNotMatch(log, /step stop/);
+  await t.src.commit({ 'mta/z.mjs': '3' });
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r', now: true }), 'ok');
+  s = await t.state();
+  assert.equal(s.previous, first);
+  assert.equal(await runEntry(t.ctx, { kind: 'rollback', name: 'r', target: first, now: true }), 'ok');
+  s = await t.state();
+  assert.equal(s.live, first);
+  log = await fs.readFile(s.last.log, 'utf8');
+  assert.match(log, /stop skipped: --now/);
+});
+
+test('a stray now field on a webhook entry does not skip STOP', async () => {
+  const t = await setup({ extra: { STOP: 'exit 1' } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r', now: true }), 'stop failed');
+  assert.doesNotMatch(await fs.readFile((await t.state()).last.log, 'utf8'), /stop skipped/);
+});
+
+test('--now with no STOP set changes nothing and logs nothing', async () => {
+  const t = await setup();
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r', now: true }), 'ok');
+  assert.doesNotMatch(await fs.readFile((await t.state()).last.log, 'utf8'), /stop skipped|step stop/);
+});

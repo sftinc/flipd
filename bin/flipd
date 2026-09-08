@@ -8,8 +8,8 @@ const USAGE = `usage: flipd <command> [args]
   serve                              run the service (systemd does this)
   add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]
   check <name> [--set-remote]        verify config, key, clone, and remote head
-  run <name>                         queue a forced build now
-  rollback <name>                    queue a rollback
+  run <name> [--now]                 queue a forced build now (--now skips STOP)
+  rollback <name> [--now]            queue a rollback (--now skips STOP)
   status [name]                      one row per repo
   log <name> [--follow]              print or tail the latest attempt log
   env <name> build|deploy [--set K=V] [--unset K]

@@ -152,3 +152,42 @@ test('flipd serve: a bad config exits with an error, not a hang', async () => {
   assert.equal(code, 1);
   assert.match(output, /not found|ENOENT/);
 });
+
+test('flipd run and rollback: an unknown flag is usage (exit 2); --now is sent and skips STOP', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', STOP: 'exit 1', DEPLOY: 'true' });
+  const ioBad = captureIO();
+  assert.equal(await runCmd(['r', '--bogus'], { paths: p, stdout: ioBad.stdout, stderr: ioBad.stderr }), 2);
+  assert.match(ioBad.err(), /usage: flipd run <name> \[--now\]/);
+  const ioBadRb = captureIO();
+  assert.equal(await rollbackCmd(['r', '--bogus'], { paths: p, stdout: ioBadRb.stdout, stderr: ioBadRb.stderr }), 2);
+  assert.match(ioBadRb.err(), /usage: flipd rollback <name> \[--now\]/);
+
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const io1 = captureIO();
+    assert.equal(await runCmd(['r', '--now'], { paths: p, stdout: io1.stdout, stderr: io1.stderr }), 0);
+    assert.match(io1.out(), /queued r/);
+    await waitIdle(p);
+    let s = await readState(p.repoDir('r'));
+    assert.equal(s.last.outcome, 'ok');
+    const first = s.live;
+    const io2 = captureIO();
+    assert.equal(await runCmd(['r', '--now'], { paths: p, stdout: io2.stdout, stderr: io2.stderr }), 0);
+    await waitIdle(p);
+    s = await readState(p.repoDir('r'));
+    assert.equal(s.previous, first);
+    const io3 = captureIO();
+    assert.equal(await rollbackCmd(['r', '--now'], { paths: p, stdout: io3.stdout, stderr: io3.stderr }), 0);
+    assert.match(io3.out(), /queued rollback of r to/);
+    await waitIdle(p);
+    s = await readState(p.repoDir('r'));
+    assert.equal(s.live, first);
+    assert.equal(s.last.outcome, 'ok');
+  } finally {
+    await svc.close();
+  }
+});
