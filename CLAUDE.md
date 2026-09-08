@@ -11,21 +11,21 @@ Each directory has its own CLAUDE.md with the detail for that layer. Read the on
 for the layer you are changing; this file is the overview and the rules that bind
 everywhere.
 
-| Directory | What lives there |
-|---|---|
-| [`lib/`](lib/CLAUDE.md) | The service: hook listener, queue, the run controller, state, git, logging |
-| [`lib/cli/`](lib/cli/CLAUDE.md) | One file per subcommand, all talking to the service over a Unix socket |
-| `/etc/flipd/accounts/` | Accounts (`KIND`, `API`, `TOKEN`), one per host, `0600 root`. Only `add` and `account list` read them; the service never does. |
-| [`test/`](test/CLAUDE.md) | `node:test`, real git repos and real sockets — no mocking framework |
-| `bin/flipd` | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here. |
-| `install.sh` | Root-only installer. See the rule below — **never run it.** |
-| `flipd.service` | The systemd unit the installer writes to `/etc/systemd/system/`. `KillMode=mixed` is load-bearing: `SIGTERM` reaches flipd only, so `run.mjs` kills the build's own process group and records `interrupted` rather than being killed alongside it. `RuntimeDirectory=flipd` is what creates `/run/flipd` for the CLI socket. |
-| `flipd.logrotate` | The `/etc/logrotate.d/flipd` policy for every repo's `events.log` — monthly, twelve kept. `create 0640 flipd flipd` is the line that keeps the service able to append after a rotation. |
-| `docs/` | One file per reader question — the agent entry point, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here. |
-| `todo/` | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md). |
-| `SERVER.md` | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up. |
-| `SERVER.example.md` | The shape `SERVER.md` follows, and what [`docs/agent.md`](docs/agent.md) hands an agent for an operator's own box. Tracked, so it carries placeholders and rules and never a real address. |
-| `.superpowers/` | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it. |
+| Directory                       | What lives there                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`lib/`](lib/CLAUDE.md)         | The service: hook listener, queue, the run controller, state, git, logging                                                                                                                                                                                                                                                   |
+| [`lib/cli/`](lib/cli/CLAUDE.md) | One file per subcommand, all talking to the service over a Unix socket                                                                                                                                                                                                                                                       |
+| `/etc/flipd/accounts/`          | Accounts (`KIND`, `API`, `TOKEN`), one per host, `0600 root`. Only `add` and `account list` read them; the service never does.                                                                                                                                                                                               |
+| [`test/`](test/CLAUDE.md)       | `node:test`, real git repos and real sockets — no mocking framework                                                                                                                                                                                                                                                          |
+| `bin/flipd`                     | Arg parsing, usage text, dynamic import of `lib/cli/<cmd>.mjs`. Adding a command means editing `COMMANDS` here.                                                                                                                                                                                                              |
+| `install.sh`                    | Root-only installer. See the rule below — **never run it.**                                                                                                                                                                                                                                                                  |
+| `flipd.service`                 | The systemd unit the installer writes to `/etc/systemd/system/`. `KillMode=mixed` is load-bearing: `SIGTERM` reaches flipd only, so `run.mjs` kills the build's own process group and records `interrupted` rather than being killed alongside it. `RuntimeDirectory=flipd` is what creates `/run/flipd` for the CLI socket. |
+| `flipd.logrotate`               | The `/etc/logrotate.d/flipd` policy for every repo's `events.log` — monthly, twelve kept. `create 0640 flipd flipd` is the line that keeps the service able to append after a rotation.                                                                                                                                      |
+| `docs/`                         | One file per reader question — the agent entry point, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here.                                                |
+| `todo/`                         | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md).                                                                                                                                                                                                                                    |
+| `SERVER.md`                     | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up.                                                                                                                                                                                                 |
+| `SERVER.example.md`             | The shape `SERVER.md` follows, and what [`docs/agent.md`](docs/agent.md) hands an agent for an operator's own box. Tracked, so it carries placeholders and rules and never a real address.                                                                                                                                   |
+| `.superpowers/`                 | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it.                                                                                                                                                                                                                                   |
 
 ## Commands
 
@@ -130,7 +130,17 @@ touch one:
   running service; each repo flipd deploys lives under `/var/lib/flipd/<name>/`.
   If a box deploys flipd with flipd, those are two copies of this repository,
   and upgrading the service is `git -C /opt/flipd pull && systemctl restart
-  flipd` — which no deploy does for you, and which needs `flipd status` idle
+flipd` — which no deploy does for you, and which needs `flipd status` idle
   first, or the restart kills a running build and drops the queue.
 - **Confirm a change behaviourally, not by reading config.** `caddy validate`
   proves syntax, not that a field path matched.
+
+## Rule #1: Keep It Simple, Stupid (KISS)
+
+Simplicity beats cleverness. When in doubt, write the boring version.
+
+- Solve the problem that exists now, not one that might exist later.
+- Search for an existing helper or pattern before writing a new one.
+- No extra layers (factories, wrappers, interfaces) unless there are two real callers today.
+
+Before calling it done: Can this be less code? Is anything here not needed yet? Would someone new get it without explanation?
