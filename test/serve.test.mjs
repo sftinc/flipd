@@ -801,12 +801,19 @@ test('trigger --wait: a client that goes away does not cancel the build', async 
   await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
   const svc = await serve({ paths: p, journal: () => {} });
   try {
-    await new Promise((resolve) => {
-      const conn = net.createConnection(p.sock);
-      conn.on('error', () => {});
-      conn.on('connect', () => conn.write(`${JSON.stringify({ cmd: 'trigger', name: 'r', wait: true })}\n`));
-      setTimeout(() => { conn.destroy(); resolve(); }, 200);
-    });
+    const conn = net.createConnection(p.sock);
+    conn.on('error', () => {});
+    conn.on('connect', () => conn.write(`${JSON.stringify({ cmd: 'trigger', name: 'r', wait: true })}\n`));
+    // Wait for the build to actually be in flight before dropping the
+    // connection, rather than a fixed delay: a fixed delay only proves the
+    // build ran within *some* window, and under load (this is the slowest
+    // file in the suite, running concurrently with other files) it can elapse
+    // before the handler's readState + enqueue have even finished, destroying
+    // the connection before anything was queued at all. Observing `running`
+    // both removes that race and proves the claim the test makes — the
+    // client was still connected when the build actually started.
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r');
+    conn.destroy();
     await waitIdle(p);
     assert.equal((await readState(p.repoDir('r'))).last.outcome, 'ok', 'the build ran to completion');
   } finally {
@@ -822,11 +829,45 @@ test('close answers an open trigger --wait with stopping when its entry is dropp
   await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'sleep 5', DEPLOY: 'true' });
   await writeRepoConf(p, 'r2', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
   const svc = await serve({ paths: p, journal: () => {} });
-  await sendCommand(p.sock, { cmd: 'run', name: 'r1' });
-  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
-  const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r2', wait: true }, { timeoutMs: null });
-  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).queued.includes('r2'));
-  const closing = svc.close();
-  assert.deepEqual(await waiting, { ok: false, refused: 'stopping' });
-  await closing;
+  try {
+    await sendCommand(p.sock, { cmd: 'run', name: 'r1' });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+    const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r2', wait: true }, { timeoutMs: null });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).queued.includes('r2'));
+    const closing = svc.close();
+    assert.deepEqual(await waiting, { ok: false, refused: 'stopping' });
+    await closing;
+  } finally {
+    // svc.close() is memoized (closing is cached and re-returned), so this is
+    // a no-op on the pass-through path above and the safety net if waitFor or
+    // the assertion throws first — without it, a thrown waitFor here leaves a
+    // listening socket server behind for the rest of the run, in the file
+    // that other tests are least able to afford it in.
+    await svc.close();
+  }
+});
+
+test('trigger --wait against a repo already building follows the coalesced rerun, not the build already in flight', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: true, accepted: true });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r');
+    // A wrong handler that only awaits `covered` when `enqueue` reports
+    // `queued: true` would answer `accepted` immediately here too — this is
+    // the branch that catches it: `r` is already building, so this trigger's
+    // `covered` is the queue's promise for the *rerun* the running build owes
+    // afterwards (queue.mjs's `runAgain`), not the build already in flight.
+    // Following the wrong one would answer for a push this trigger never saw.
+    const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r', wait: true }, { timeoutMs: null });
+    assert.deepEqual(await waiting, { ok: true, outcome: 'skipped' }, 'the rerun sees the same head the in-flight build is about to make live, so it has nothing to do');
+    const s = await readState(p.repoDir('r'));
+    assert.equal(s.last.trigger, 'coalesced', 'confirms the reply was answered for the rerun entry, not the build already running');
+  } finally {
+    await svc.close();
+  }
 });
