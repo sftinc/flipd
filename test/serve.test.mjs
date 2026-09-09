@@ -659,8 +659,12 @@ test('no PUBLIC_HOST: no hook listener, no secret needed, and both the shutdown 
     await svc.close();   // the shutdown path with hook === null
   }
   // The socket-bind-failure path, which closes the hook server when there is
-  // one: a directory at the socket path makes createSocketServer throw.
+  // one: a directory at the socket path makes createSocketServer's own
+  // fs.rm throw ERR_FS_EISDIR. Matching that code, not just any rejection,
+  // is what pins the `if (hook)` guard: drop the guard and hook.close(r) is
+  // called on null instead, which rejects with a TypeError and would slip
+  // past a bare assert.rejects unnoticed.
   await fs.mkdir(p.sock);
-  await assert.rejects(serve({ paths: p, journal: () => {} }));
+  await assert.rejects(serve({ paths: p, journal: () => {} }), (e) => e.code === 'ERR_FS_EISDIR');
   await fs.rm(p.sock, { recursive: true, force: true });
 });
