@@ -41,7 +41,10 @@ it — a trigger does not learn it.
 
 The per-attempt log line names the trigger — `trigger=ssh` for this door,
 `trigger=webhook` for the other, `trigger=coalesced` for the catch-up rerun —
-and `events.log` carries the same word in its `started` and `queued` lines.
+and `events.log` gets a matching `started` line for all three. `ssh` and
+`webhook` also get a `queued` line when the request first arrives;
+`coalesced` does not, because the queue enqueues that rerun itself, with
+nothing outside it asking to be logged.
 
 ## Exit codes
 
@@ -131,13 +134,13 @@ Straight from the file: it never goes on a command line or a screen.
 
 On your own machine:
 
-    ssh-keyscan -t ed25519 box.example.com
+    ssh-keyscan -t ed25519 box.example.com 2>/dev/null
 
 Compare the key it prints with the box's own — on the box,
 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` shows the fingerprint —
 then store the full `ssh-keyscan` line:
 
-    ssh-keyscan -t ed25519 box.example.com | gh variable set FLIPD_KNOWN_HOSTS -R <owner>/<repo>
+    ssh-keyscan -t ed25519 box.example.com 2>/dev/null | gh variable set FLIPD_KNOWN_HOSTS -R <owner>/<repo>
 
 **6. Delete the private key from your machine.** GitHub has the only copy
 it needs; nothing else does.
