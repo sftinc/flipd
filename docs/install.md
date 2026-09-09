@@ -19,8 +19,13 @@ upstream of flipd.
     sudo /opt/flipd/install.sh --host deploy.example.com
 
 `--host` needs a name that already points at the box; it installs Caddy, wires
-TLS, and checks the path with a signed ping. Without it, everything else
-happens and the Caddy block is printed to paste by hand.
+TLS, checks the path with a signed ping, and sets `PUBLIC_HOST`, which is what
+turns the webhook listener on. Without it, everything else happens, the Caddy
+block is printed to paste by hand, and flipd runs with no HTTP listener at all
+— which is the install for a box that will be triggered over SSH instead
+([triggering-over-ssh.md](triggering-over-ssh.md)). To front it with your own
+TLS later, set `PUBLIC_HOST` in `flipd.conf` as well as pasting the block, or
+re-run with `--host`.
 
 With `--host`, the site block lives at `/etc/caddy/conf.d/flipd.caddy` and
 logs every request to this site — source IP, method, path, status, and the

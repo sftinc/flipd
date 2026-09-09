@@ -18,9 +18,9 @@ the never-print rule and the zero-dependency rule bind every file here.
 | File | Contract |
 |---|---|
 | `run.mjs` | `runEntry(ctx, entry)` — one attempt, start to finish. Also `runOnFailure`, prune, and the rollback target rule. |
-| `serve.mjs` | `serve({paths, journal})` starts the service; `reconcile()` fixes state left by a crash; `findRepoFor()` matches a push. |
+| `serve.mjs` | `serve({paths, journal})` starts the service; `reconcile()` fixes state left by a crash; `findRepoFor()` matches a push. The hook server exists only with `PUBLIC_HOST`; `trigger` is the socket-side twin of `onPush`. |
 | `hook.mjs` | `createHookServer(...)`, `verifySignature(...)`, `cleanForLog(value, max)`. |
-| `queue.mjs` | `createQueue(runner, {onError})` — serialises work, survives a throwing runner. |
+| `queue.mjs` | `createQueue(runner, {onError})` — serialises work, survives a throwing runner. Every accepted entry carries `settled`, a promise that always resolves (`completed`/`crashed`/`stopping`); `enqueue()` returns `covered`, the promise of whatever unit covers the request — the entry, the duplicate it collapsed into, or the rerun owed after the current run. `trigger --wait` follows it. |
 | `state.mjs` | `readState`/`writeState` per repo, `StateError`, `emptyState`. Writes via a uniquely-named temp file then rename. |
 | `config.mjs` | Parses both config files. `MAIN_KEYS`/`REPO_KEYS` gate what is accepted; an unknown key is an error. |
 | `repourl.mjs` | `parseRepoUrl(url)` → `{host, owner, repo, name}` or null; `repoIdentity(url)` — the host/owner/repo string `findRepoFor` matches on. |

@@ -82,9 +82,9 @@ One process (`flipd serve`, run by systemd) owns everything mutable. It listens 
 two sockets and funnels both into a single-worker queue, so no two builds for the
 same repo can ever interleave:
 
-    GitHub push ──HTTPS──> Caddy ──> :9000 /deploy ──┐
+    GitHub push ──HTTPS──> Caddy ──> :9000 /deploy ──┐   (only with PUBLIC_HOST)
                                                      ├──> queue (one worker) ──> runEntry()
-    flipd <cmd> ──unix socket──> /run/flipd/flipd.sock┘
+    flipd <cmd> ──unix socket──> /run/flipd/flipd.sock┘   (incl. `trigger`, the SSH door: the webhook as a command)
 
 - **`lib/hook.mjs`** verifies the HMAC before parsing anything, then hands a
   matched repo to the queue. Everything after `verifySignature` journals.

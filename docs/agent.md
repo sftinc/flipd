@@ -34,6 +34,7 @@ Full model: [build-and-deploy.md](build-and-deploy.md).
 | Set flipd up on a fresh box | Install, add the repo, write `BUILD` and `DEPLOY`, verify. Two steps that cannot be undone. | [Set it up on a fresh box](#set-it-up-on-a-fresh-box) |
 | Work out a `BUILD` and a `DEPLOY` | Read their app, propose both, show them before you use them. | [Work out a `BUILD` and a `DEPLOY`](#work-out-a-build-and-a-deploy) |
 | Add a repo to a box that already runs flipd | No installer. A deploy key and a webhook, then the two commands. | [Add a repo to a box that already runs flipd](#add-a-repo-to-a-box-that-already-runs-flipd) |
+| Trigger over SSH instead of a webhook | A box with no HTTP door: a forced-command key and `flipd trigger`, not `install.sh --host`. | [Trigger over SSH instead of a webhook](#trigger-over-ssh-instead-of-a-webhook) |
 | Change a build or deploy command | One conf file, re-read on the next event. No restart. | [Change `BUILD` or `DEPLOY`](#change-build-or-deploy) |
 | Find out whether it is working | `check`, `status`, `log`. Nothing here writes. | [Verify](#verify) |
 | Work out why a push did not deploy | Caddy's journal, the attempt log, an exit code. Also safe. | [When it goes wrong](#when-it-goes-wrong) |
@@ -147,10 +148,13 @@ Establish these first. Ask the operator; do not guess any of them:
 
 - **The server** — hostname or IP, the SSH user, and which key. Confirm you can
   reach it and whether you have root or passwordless `sudo`.
-- **A public hostname for the webhook**, and whether DNS already points it at
-  that box. `install.sh --host` installs Caddy and gets a TLS certificate for
-  that name; if the name does not resolve to the box yet, the ACME challenge
-  fails. Check with `dig +short <name>` before you run anything.
+- **How pushes will reach the box.** A webhook needs a public hostname with
+  DNS already pointing at the box and 80/443 open; `install.sh --host`
+  installs Caddy and gets a TLS certificate for that name (if the name does
+  not resolve yet, the ACME challenge fails — check with `dig +short <name>`
+  first). A box with only SSH open is triggered from a GitHub Action instead,
+  with no `--host` at all — see the job below. Ask which; do not assume the
+  webhook.
 - **The branch** to deploy. Default is `main`.
 - **The forge** — GitHub, Forgejo or Gitea — and whether they want to give flipd
   an account so that setup is automatic. Without one, `add` prints a deploy key
@@ -244,6 +248,19 @@ Do not re-run `install.sh`; the box is already set up. Only steps 4-7 above
 apply: an account if this is a new forge (an existing one covers every repo on
 that host), then `flipd add`, then `BUILD` and `DEPLOY`, then verify. `flipd
 add` is still a gate — it creates a deploy key and a webhook on the forge.
+
+### Trigger over SSH instead of a webhook
+
+For a box with no HTTP: [triggering-over-ssh.md](triggering-over-ssh.md) is
+the whole procedure. What is flipd's — `flipd trigger <name> --wait` as the
+forced command, `PUBLIC_HOST` unset — you can set up. What is not flipd's,
+you must not do without asking, and most of it you cannot do from the box
+at all: the keypair is generated on the **operator's** machine, never on the
+box and never by you; the private half goes into the repository's Actions
+secrets by the operator's hand; the login user and its `authorized_keys`
+line are **gates** — a new account and a new way into the box. Show the
+operator the exact lines the doc gives (and that `flipd add` prints) and let
+them run them. Never write into anyone's `~/.ssh`.
 
 ### Change `BUILD` or `DEPLOY`
 

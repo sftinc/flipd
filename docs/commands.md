@@ -7,6 +7,7 @@
 | `flipd account add <host> --kind github\|forgejo\|gitea [--api URL] [--ssh-port N] < token-file` / `account list` / `account remove <host>` | sudo | `0` done; `1` bad host/kind/token, the account already exists or does not, or the host key could not be scanned; `2` usage |
 | `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `5` pass, but a release is `pending` — flipped to and never confirmed — which outranks `4`; `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the webhook recipe (Payload URL, secret location, `gh api` pipeline) with the current `PUBLIC_HOST`, so it can be read again after `--host` |
 | `flipd run <name> [--now]` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down; `--now` skips `STOP` for this attempt |
+| `flipd trigger <name> [--wait]` | group (or sudo) | The webhook as a command — refused on `pending`, skipped when already live, `WATCH`/`IGNORE` honoured, no `--now`. Without `--wait`: `0` accepted (queued, or coalesced into work already accepted — stdout says which); `1` refused (`pending`, unreadable `state.json`, or no such repo) or discarded (service stopping), reason on stderr; `2` usage; `3` service down. With `--wait`, the session holds until the covering attempt settles: `0` `ok` or `skipped`; `1` refused, any other outcome, or a crash, or the service stopping; `3` the connection closed unanswered (a restart mid-wait — the build continues; see `flipd log`). Made for a forced-command SSH key: [triggering-over-ssh.md](triggering-over-ssh.md) |
 | `flipd rollback <name> [--now]` | group (or sudo) | same as `run`, printing `queued rollback of <name> to <sha>` or `not queued: <reason>` |
 | `flipd status [name]` | group (or sudo) | `0` printed (the activity column falls back to `service down` if the socket is merely unreachable); `1` no such repo / nothing configured, **or** a bare `EACCES` if you're not in the `flipd` group — see [Permissions](#permissions) |
 | `flipd log <name> [--follow]` | group (or sudo) | `0` printed (or tailing, until `--follow` is stopped); `1` no logs / read error; `2` usage |
@@ -23,20 +24,20 @@
 `sudo`** — the account conf is root-only because it holds a token that can
 create webhooks.
 
-`status`, `check`, `run`, `rollback` and `log` don't need `sudo`, but they do
-need your account in the `flipd` group (see [install.md](install.md)) — none
-of the three directories they touch is world-readable, on purpose:
-`/etc/flipd/repos` (mode `0750`, `root:flipd` — `status` and
-`check` list repos from it), the Unix socket at
+`status`, `check`, `run`, `trigger`, `rollback` and `log` don't need `sudo`,
+but they do need your account in the `flipd` group (see
+[install.md](install.md)) — none of the three directories they touch is
+world-readable, on purpose: `/etc/flipd/repos` (mode `0750`, `root:flipd` —
+`status` and `check` list repos from it), the Unix socket at
 `/run/flipd/flipd.sock` (mode `0660`,
-`flipd:flipd` — the only way to reach `run`, `rollback`, and
+`flipd:flipd` — the only way to reach `run`, `trigger`, `rollback`, and
 the deploy key `check` needs), and `/var/log/flipd` (mode `0750`, same
 owner — `log` reads from it). Without group membership (and not running as
 root):
 
-- `check`, `run`, `rollback` and `log` report `service down` from the
-  unreachable socket or an unreadable log directory, indistinguishable from
-  the service actually being down;
+- `check`, `run`, `trigger`, `rollback` and `log` report `service down` from
+  the unreachable socket or an unreadable log directory, indistinguishable
+  from the service actually being down;
 - `status` fails outright with a bare `EACCES: permission denied, scandir
   '/etc/flipd/repos'` (exit `1`), since it cannot even list the
   configured repos.
