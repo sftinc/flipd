@@ -31,7 +31,14 @@ Assert the *property*, not the implementation. Two examples worth copying:
 - `install.test.mjs` reads `install.sh` as text and asserts against it. **Never
   execute it** (root-only, no undo). When asserting structure, check nesting and
   not ordering — `spanOf()` exists because "between `log {` and `handle`" also
-  passes when a directive has been moved out of the block it belongs in.
+  passes when a directive has been moved out of the block it belongs in. One
+  test goes a step further without crossing the line: it extracts the literal
+  `sed` pipeline `install.sh` uses to read `WEBHOOK_SECRET`'s effective value
+  and runs *that pipeline* — asserted first to be the exact text present in the
+  script — against a temp conf file it creates itself. That exercises the
+  pipeline's own behaviour (last assignment wins, whitespace tolerated) without
+  ever invoking `install.sh`; the installer stays unexecuted, only a few words
+  of shell it happens to contain are.
 
 ## Before you trust a new test
 

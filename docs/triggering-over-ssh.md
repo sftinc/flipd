@@ -62,7 +62,7 @@ With `--wait`, the session holds until the covering attempt settles, then:
 | Exit | Outcome |
 |---|---|
 | `0` | `ok`, or `skipped` (already live, or nothing under `WATCH` changed) |
-| `1` | `fetch failed`, `checkout failed`, `build failed`, `stop failed`, `deploy failed`, `interrupted`, `config failed`; or the trigger was refused; or the service crashed on the attempt; or the service was stopping |
+| `1` | `fetch failed`, `checkout failed`, `build failed`, `stop failed`, `deploy failed`, `interrupted`, `config failed`, or `refused`; or the trigger was refused before it was even queued; or the service crashed on the attempt; or the service was stopping |
 | `3` | the connection closed with no answer: the service restarted or died mid-wait |
 
 `skipped` is `0` on purpose: CI must not go red because nothing needed
@@ -205,9 +205,13 @@ is an SSH door, and having both is just having both.
 restart flipd (`flipd status` idle first, as for any restart). The service
 starts no listener, `WEBHOOK_SECRET` becomes optional, and the journal says
 `webhook listener off: PUBLIC_HOST is not set`. While it is off, the forge's
-deliveries fail visibly — Caddy proxies to a port nobody is listening on —
-and the forge records them; uncomment, restart, and redeliver from the
-forge's webhook page to catch up. `flipd check <name>` says
+deliveries fail visibly — with `install.sh`'s own Caddy block (`handle
+/deploy { reverse_proxy 127.0.0.1:9000 }`), that means proxying to a port
+nobody is listening on, a 502 — and the forge records them; uncomment,
+restart, and redeliver from the forge's webhook page to catch up. A
+hand-rolled front end may fail differently; the point is that a delivery
+made while the listener is off is never silently lost. `flipd check <name>`
+says
 `webhook  configured off (PUBLIC_HOST not set)` and where the webhook
 pointed, so nothing is forgotten.
 
