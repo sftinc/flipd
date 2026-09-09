@@ -137,7 +137,7 @@ test('check prints the webhook recipe with the current PUBLIC_HOST, so it can be
   assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
 
   // Host not known yet: the placeholder, not a crash and not silence.
-  await writeMain(p);
+  await fs.rm(p.mainConf);
   const o2 = io();
   assert.equal(await check(['r'], { paths: p, ...o2, sendOverride: send(ok) }), 0);
   assert.match(o2.out(), /https:\/\/<PUBLIC_HOST>\/deploy/);
@@ -454,7 +454,7 @@ test('add with an account: a 404 or a rejected token creates nothing; a missing 
     assert.match(o401.err(), /token rejected by forge\.example\.com/);
     await nothing();
     noSecrets(o401);
-    await writeMain(p);   // no PUBLIC_HOST
+    await writeMain(p, '', { publicHost: null });   // no PUBLIC_HOST
     f.seen.length = 0;
     const oHost = io();
     assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...oHost, forgeOverride }), 1);
@@ -674,7 +674,7 @@ test('add with an account: the ssh-keyscan command for a differing SSH host carr
 
 test('add with an account: a malformed flipd.conf is reported by name and message, not the install.sh placeholder', async () => {
   const p = await makePrefix();
-  await fs.writeFile(p.mainConf, 'LISTEN=127.0.0.1:0\n');   // no WEBHOOK_SECRET: parseMain refuses to load it
+  await fs.writeFile(p.mainConf, 'PUBLIC_HOST=deploy.example.com\nLISTEN=127.0.0.1:0\n');   // PUBLIC_HOST set, no WEBHOOK_SECRET: parseMain refuses to load it
   await writeAccountConf(p, 'forge.example.com', { KIND: 'forgejo', TOKEN: 'tokVALUE' });
   const f = await fakeForge({});
   const forgeOverride = (c) => createForge({ ...c, api: f.api });
