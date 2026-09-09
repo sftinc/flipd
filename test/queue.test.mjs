@@ -140,3 +140,20 @@ test('a throwing onError does not wedge the queue and its error surfaces rather 
     globalThis.queueMicrotask = realQueueMicrotask;
   }
 });
+
+test('the catch-up rerun after run-again is labelled coalesced: the queue kept only the name, never who asked', async () => {
+  const ran = [];
+  let g = gate();
+  const q = createQueue(async (e) => { ran.push(e); await g.p; });
+  q.enqueue({ kind: 'webhook', name: 'a' });                 // running
+  q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });     // sets run-again
+  const first = g;
+  g = gate();
+  first.open();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(ran.length, 2, 'ran again exactly once');
+  assert.equal(ran[1].kind, 'webhook', 'still the webhook kind: every kind === webhook rule applies');
+  assert.equal(ran[1].via, 'coalesced');
+  g.open();
+  await q.drain();
+});
