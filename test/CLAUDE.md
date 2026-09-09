@@ -14,7 +14,7 @@
 |---|---|
 | `makePrefix()` | A temp tree with `FLIPD_PREFIX` semantics — every path under it, so nothing touches the real `/etc` or `/var` |
 | `makeSourceRepo()` | An actual git repo with `.commit({file: contents})`, so fetch, worktree and sha logic run for real |
-| `writeMain(p, extra)` | The server conf, with `WEBHOOK_SECRET=testsecret` |
+| `writeMain(p, extra, { publicHost })` | The server conf, with `WEBHOOK_SECRET=testsecret` and `PUBLIC_HOST=deploy.example.com` by default (that key is the HTTP switch — pass `{ publicHost: null }` for a conf with no listener) |
 | `writeRepoConf(p, name, kv)` | A repo conf |
 
 Tests start real HTTP servers and real Unix sockets on ephemeral ports. Anything

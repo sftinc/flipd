@@ -96,6 +96,7 @@ test('parseMain: WEBHOOK_SECRET is required only when PUBLIC_HOST is set; LISTEN
   assert.equal(parseMain('PUBLIC_HOST=d.example.com\nWEBHOOK_SECRET=s\n').webhookSecret, 's');
   // LISTEN is still parsed and still refused when malformed, host or no host.
   assert.throws(() => parseMain('LISTEN=nonsense\n'), /LISTEN must be host:port/);
+  assert.throws(() => parseMain('PUBLIC_HOST=d.example.com\nWEBHOOK_SECRET=s\nLISTEN=nonsense\n'), /LISTEN must be host:port/);
 });
 
 test('parseRepo: defaults, required keys, name and ROOT rules', () => {
