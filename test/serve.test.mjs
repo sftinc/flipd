@@ -725,3 +725,32 @@ test('trigger while pending or with an unreadable state is refused, in the hook\
     await svc.close();
   }
 });
+
+test('trigger during shutdown is refused as stopping, in both sinks, with the trigger door\'s own recovery advice, and nothing is queued', async () => {
+  const p = await makePrefix();
+  await writeMain(p, '', { publicHost: null });   // no HTTP door; only the socket is under test
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  // Same technique as the webhook's shutdown test above: close() runs
+  // queue.stop() and abort.abort() synchronously before its first await, so
+  // `stopping` is guaranteed the instant svc.close() returns — no waitFor,
+  // no race. r1's BUILD never actually runs (the abort lands during
+  // fetch/checkout); r2 needs no reachable REPO because the refusal returns
+  // before any fetch is attempted.
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'trap "" TERM; sleep 5', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: 'git@github.com:o/r2.git', BUILD: 'true', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r1' }), { ok: true, accepted: true });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+  const closing = svc.close();   // queue.stop() has run by the time this returns
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r2' }), { ok: false, refused: 'stopping' });
+    assert.match(await fs.readFile(path.join(p.repoLog('r2'), 'events.log'), 'utf8'), /refused stopping\n/);
+    // The record itself does not distinguish doors — only journald's advice does.
+    assert.ok(lines.some((l) => l === '[r2] refused a trigger: stopping; trigger again once flipd is back'), `journald: ${lines}`);
+    assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, []);
+  } finally {
+    await closing;
+  }
+});
