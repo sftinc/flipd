@@ -277,7 +277,7 @@ test('serve closes the hook server if the socket fails to start, so a retry can 
   const p = await makePrefix();
   const port = await getFreePort();
   await fs.mkdir(path.dirname(p.mainConf), { recursive: true });
-  await fs.writeFile(p.mainConf, `WEBHOOK_SECRET=testsecret\nLISTEN=127.0.0.1:${port}\n`);
+  await fs.writeFile(p.mainConf, `WEBHOOK_SECRET=testsecret\nLISTEN=127.0.0.1:${port}\nPUBLIC_HOST=deploy.example.com\n`);
   // Occupy the socket's path with something createSocketServer cannot bind
   // to: a directory makes its very first `fs.rm(sockPath, {force:true})`
   // throw before it ever attempts to listen — the same "throws after the
@@ -641,4 +641,26 @@ test('now on run and rollback reaches the worker and skips STOP; without it STOP
   } finally {
     await svc.close();
   }
+});
+
+test('no PUBLIC_HOST: no hook listener, no secret needed, and both the shutdown and the failed-socket-bind paths survive the null hook', async () => {
+  const p = await makePrefix();
+  await fs.mkdir(path.dirname(p.mainConf), { recursive: true });
+  await fs.writeFile(p.mainConf, 'LISTEN=127.0.0.1:0\n');   // no PUBLIC_HOST, no WEBHOOK_SECRET
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    assert.equal(svc.hookPort, null);
+    assert.ok(lines.includes('webhook listener off: PUBLIC_HOST is not set'), `journal: ${lines}`);
+    assert.ok(!lines.some((l) => /listening on/.test(l)), 'nothing claims to listen');
+    const st = await sendCommand(p.sock, { cmd: 'status' });
+    assert.equal(st.ok, true, 'the socket is up regardless: SSH triggers, run and rollback all go through it');
+  } finally {
+    await svc.close();   // the shutdown path with hook === null
+  }
+  // The socket-bind-failure path, which closes the hook server when there is
+  // one: a directory at the socket path makes createSocketServer throw.
+  await fs.mkdir(p.sock);
+  await assert.rejects(serve({ paths: p, journal: () => {} }));
+  await fs.rm(p.sock, { recursive: true, force: true });
 });
