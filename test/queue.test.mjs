@@ -158,15 +158,27 @@ test('the catch-up rerun after run-again is labelled coalesced: the queue kept o
   await q.drain();
 });
 
-// Resolves after the runner has had a chance to be kicked for the next entry.
-const tick = () => new Promise((r) => setTimeout(r, 20));
-
 test('settled: completed with the runner return, crashed with the message; never a rejection', async () => {
   const q = createQueue(async (e) => { if (e.name === 'boom') throw new Error('bad'); return 'ok'; }, { onError: () => {} });
   const a = q.enqueue({ kind: 'webhook', name: 'a' });
   const b = q.enqueue({ kind: 'webhook', name: 'boom' });
   assert.deepEqual(await a.covered, { done: 'completed', outcome: 'ok' });
   assert.deepEqual(await b.covered, { done: 'crashed', error: 'bad' });
+  await q.drain();
+});
+
+test('a runner that rejects with null, or throws a bare string, still crashes the entry and does not wedge the queue', async () => {
+  // e.message on a nullish or string rejection throws a TypeError inside
+  // kick()'s catch — un-awaited, so it would escape, skip the trailing
+  // kick(), and stop the single worker from ever draining again.
+  const q = createQueue(
+    async (e) => { if (e.name === 'nully') throw null; throw 'plain string'; },
+    { onError: () => {} },
+  );
+  const a = q.enqueue({ kind: 'webhook', name: 'nully' });
+  const b = q.enqueue({ kind: 'webhook', name: 'stringy' });
+  assert.deepEqual(await a.covered, { done: 'crashed', error: 'null' });
+  assert.deepEqual(await b.covered, { done: 'crashed', error: 'plain string' });
   await q.drain();
 });
 
@@ -181,7 +193,9 @@ test('a throwing runner with nobody awaiting settled leaves no unhandled rejecti
     const q = createQueue(async () => { throw new Error('bad'); }, { onError: () => {} });
     q.enqueue({ kind: 'webhook', name: 'a' });
     await q.drain();
-    await tick();
+    // An unhandledRejection fires on a later turn than the rejection itself;
+    // drain() alone can resolve before that turn runs, so give it one.
+    await new Promise((r) => setTimeout(r, 20));
     assert.deepEqual(unhandled, []);
   } finally {
     process.off('unhandledRejection', onUnhandled);
@@ -253,15 +267,26 @@ test('covered: a manual run queued during the build covers the rerun, so the tok
   assert.deepEqual(await t.covered, { done: 'completed', outcome: 'manual:a' });
 });
 
-test('stop settles discarded entries and an outstanding run-again token as stopping; the running attempt keeps its real outcome', async () => {
+test('stop settles discarded entries — including a rollback queued via commit() — and an outstanding run-again token as stopping; the running attempt, started via enqueueIfIdle, keeps its real outcome', async () => {
   const hold = gate();
   const q = createQueue(async (e) => { if (e.name === 'a') await hold.p; return 'ok'; });
-  const running = q.enqueue({ kind: 'webhook', name: 'a' });
+  // Started via enqueueIfIdle rather than enqueue, so this test also proves
+  // that path's entry.settled works end-to-end. It can only prove that by
+  // outliving stop(), not by being discarded: enqueueIfIdle only ever queues
+  // onto an idle worker, and kick() shifts the entry into `running`
+  // synchronously in that same call — it can never still be sitting in
+  // `entries` for stop() to find and discard.
+  const running = q.enqueueIfIdle({ kind: 'check', name: 'a' });
   const token = q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });
   const queued = q.enqueue({ kind: 'webhook', name: 'b' });
+  // A rollback queued via a reservation's commit(), not a raw enqueue call —
+  // proving that path's entry.settled is real too, since stop() would throw
+  // on an entry that lacked one.
+  const rollback = q.reserveRollback('a').commit('r1');
   q.stop();
   assert.deepEqual(await queued.covered, { done: 'stopping' });
   assert.deepEqual(await token.covered, { done: 'stopping' });
+  assert.deepEqual(await rollback.covered, { done: 'stopping' });
   hold.open();
   await q.drain();
   assert.deepEqual(await running.covered, { done: 'completed', outcome: 'ok' });
