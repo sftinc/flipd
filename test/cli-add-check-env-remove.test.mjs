@@ -136,11 +136,39 @@ test('check prints the webhook recipe with the current PUBLIC_HOST, so it can be
   assert.match(o.out(), /gh api repos\/o\/r\/hooks --method POST --input -/);
   assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
 
-  // Host not known yet: the placeholder, not a crash and not silence.
-  await fs.rm(p.mainConf);
+  // The conf loads without PUBLIC_HOST: no HTTP door, so the SSH recipe.
+  await writeMain(p, '', { publicHost: null });
   const o2 = io();
   assert.equal(await check(['r'], { paths: p, ...o2, sendOverride: send(ok) }), 0);
-  assert.match(o2.out(), /https:\/\/<PUBLIC_HOST>\/deploy/);
+  assert.match(o2.out(), /^ssh\s+trigger this repo over SSH/m);
+  assert.match(o2.out(), /command="\S+\/bin\/flipd trigger r --wait",restrict/);
+  assert.match(o2.out(), /gh secret set FLIPD_SSH_KEY -R o\/r </);
+  assert.ok(!o2.out().includes('Payload URL'));
+  assert.ok(!o2.out().includes('configured off'), 'no HOOK_HOST recorded: nothing to say about a webhook');
+
+  // ...and with a HOOK_HOST recorded by an earlier add: say the webhook is
+  // configured off (this reads the file; the running service may predate the
+  // edit) and where it pointed, then the SSH recipe.
+  await writeRepoConf(p, 'r', { REPO: 'git@github.com:o/r.git', BRANCH: 'main', ROOT: '.', BUILD: 'true', DEPLOY: 'true', HOOK_HOST: 'old.example.com' });
+  const o2b = io();
+  assert.equal(await check(['r'], { paths: p, ...o2b, sendOverride: send(ok) }), 0);
+  assert.match(o2b.out(), /^webhook\s+configured off \(PUBLIC_HOST not set\); recorded endpoint: https:\/\/old\.example\.com\/deploy$/m);
+  assert.match(o2b.out(), /^ssh\s+trigger this repo over SSH/m);
+
+  // loadMain fails (ENOENT here): HOOK_HOST still feeds the webhook recipe.
+  await fs.rm(p.mainConf);
+  const o2c = io();
+  assert.equal(await check(['r'], { paths: p, ...o2c, sendOverride: send(ok) }), 0);
+  assert.match(o2c.out(), /Payload URL\s+https:\/\/old\.example\.com\/deploy/);
+  assert.ok(!o2c.out().includes('trigger this repo over SSH'));
+
+  // No conf and no HOOK_HOST: the placeholder, not a crash and not silence.
+  await writeRepoConf(p, 'r', { REPO: 'git@github.com:o/r.git', BRANCH: 'main', ROOT: '.', BUILD: 'true', DEPLOY: 'true' });
+  const o2d = io();
+  assert.equal(await check(['r'], { paths: p, ...o2d, sendOverride: send(ok) }), 0);
+  assert.match(o2d.out(), /https:\/\/<PUBLIC_HOST>\/deploy/);
+
+  await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
 
   // A failed check still prints it: the rows say what failed, the recipe is
   // still the next thing the operator needs.
