@@ -1,7 +1,7 @@
 // test/recipe.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { webhookRecipe } from '../lib/cli/recipe.mjs';
+import { webhookRecipe, sshRecipe, FLIPD_BIN } from '../lib/cli/recipe.mjs';
 
 test('webhookRecipe: names the URL, the conf, the event, and the gh pipeline; never a secret value', () => {
   const r = webhookRecipe({ host: 'deploy.example.com', ghRepo: 'o/r', mainConf: '/etc/flipd/flipd.conf' });
@@ -35,4 +35,23 @@ test('webhookRecipe: placeholders pass through verbatim when nothing is known ye
   const r = webhookRecipe({ host: '<PUBLIC_HOST>', ghRepo: '<owner>/<repo>', mainConf: '/c' });
   assert.match(r, /https:\/\/<PUBLIC_HOST>\/deploy/);
   assert.match(r, /repos\/<owner>\/<repo>\/hooks/);
+});
+
+test('sshRecipe: the forced command with restrict, the repo name, the group, the doc; instructions only', () => {
+  const r = sshRecipe({ name: 'app', ghRepo: 'o/r', bin: '/opt/flipd/bin/flipd' });
+  assert.match(r, /command="\/opt\/flipd\/bin\/flipd trigger app --wait",restrict /, 'one key, one thing');
+  assert.match(r, /ssh-keygen -t ed25519 -f flipd-app -N ''/);
+  assert.match(r, /gh secret set FLIPD_SSH_KEY -R o\/r < flipd-app$/m, 'the private half goes to GitHub straight from the file');
+  assert.match(r, /usermod -aG flipd/);
+  assert.match(r, /docs\/triggering-over-ssh\.md/);
+  assert.doesNotMatch(r, /ssh-keygen[^\n]*\/etc\/flipd/, 'flipd generates nothing: the keypair is made off-box');
+  assert.ok(!r.endsWith('\n'), 'no trailing newline: the caller frames it');
+  assert.ok(!/^\s*\d\./m.test(r), 'no step number: the caller numbers it');
+});
+
+test('sshRecipe: the bin path defaults to this clone\'s bin/flipd, and ghRepo to a placeholder', () => {
+  const r = sshRecipe({ name: 'a' });
+  assert.ok(r.includes(`command="${FLIPD_BIN} trigger a --wait"`), r);
+  assert.ok(FLIPD_BIN.endsWith('/bin/flipd'));
+  assert.match(r, /-R <owner>\/<repo> </);
 });
