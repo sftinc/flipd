@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import path from 'node:path';
+import { tmpdir } from './helpers.mjs';
 
 const run = promisify(execFile);
 
@@ -276,4 +278,41 @@ test('install.sh: the Caddy site block logs every request to journald, not to a 
   const logIndex = block.indexOf('log {');
   const handleIndex = block.indexOf('handle /deploy');
   assert.ok(logIndex > 0 && logIndex < handleIndex, 'log is declared inside the site, before the handlers');
+});
+
+test('install.sh: --host normalises WEBHOOK_SECRET by the effective value, delete-all then write-one; the no-host tail names PUBLIC_HOST and the SSH doc', async () => {
+  const text = await fs.readFile('install.sh', 'utf8');
+  const start = text.indexOf('elif [ -n "$HOST" ]; then');
+  const end = text.indexOf('# Unconditional, on every run');
+  assert.ok(start > 0 && end > start, 'the --host branch is where it was');
+  const branch = text.slice(start, end);
+  const PIPE = `sed -n 's/^[[:space:]]*WEBHOOK_SECRET[[:space:]]*=[[:space:]]*//p' /etc/flipd/flipd.conf | tail -n1`;
+  assert.ok(branch.includes(`EFFECTIVE=$(${PIPE})`), 'the check reads the last assignment, whitespace-tolerant -- what parseKV reads');
+  assert.match(branch, /if \[ -z "\$EFFECTIVE" \]; then/, 'only a missing or empty effective value triggers a write; a non-empty secret is never rewritten');
+  const DELETE = `sed -i '/^[[:space:]]*WEBHOOK_SECRET[[:space:]]*=/d' /etc/flipd/flipd.conf`;
+  const WRITE = `printf 'WEBHOOK_SECRET=%s\\n' "$SECRET" >> /etc/flipd/flipd.conf`;
+  assert.ok(branch.includes(DELETE), 'every assignment line is deleted');
+  assert.ok(branch.includes(WRITE), 'then exactly one is written');
+  assert.ok(branch.indexOf(DELETE) < branch.indexOf(WRITE), 'delete-all precedes write-one: the two sed readers of this file print every match');
+  assert.ok(!/WEBHOOK_SECRET=[^\n]*\bsay\b|say[^\n]*\$SECRET/.test(branch), 'the new secret is never echoed');
+  assert.match(text, /set PUBLIC_HOST=<[^>]+> in \/etc\/flipd\/flipd\.conf[^\n]*no webhook listener/, 'the no-host tail says a hand-rolled front also needs PUBLIC_HOST');
+  assert.match(text, /docs\/triggering-over-ssh\.md/, 'the no-host tail points at the SSH doc');
+});
+
+test('the WEBHOOK_SECRET effective-value pipeline in install.sh follows the parser: last assignment wins, whitespace tolerated, empty is empty', async () => {
+  // Runs the extracted sed pipeline against a temp file -- not the installer.
+  const text = await fs.readFile('install.sh', 'utf8');
+  const PIPE = `sed -n 's/^[[:space:]]*WEBHOOK_SECRET[[:space:]]*=[[:space:]]*//p' "$1" | tail -n1`;
+  assert.ok(text.includes(PIPE.replace('"$1"', '/etc/flipd/flipd.conf')), 'the pipeline under test is the one install.sh runs');
+  const f = path.join(await tmpdir('flipd-install'), 'flipd.conf');
+  const effective = async (content) => {
+    await fs.writeFile(f, content);
+    return (await run('sh', ['-c', PIPE, 'sh', f], { env: { ...process.env, LC_ALL: 'C' } })).stdout.trim();
+  };
+  assert.equal(await effective('WEBHOOK_SECRET=old\n WEBHOOK_SECRET = \n'), '', 'a later empty assignment makes the value empty, as parseKV reads it');
+  assert.equal(await effective('LISTEN=x\nWEBHOOK_SECRET=abc\n'), 'abc');
+  assert.equal(await effective('  WEBHOOK_SECRET  =  abc  \n'), 'abc', 'whitespace around the key and = is the parser\'s rule');
+  assert.equal(await effective('WEBHOOK_SECRET=\n'), '');
+  assert.equal(await effective('LISTEN=x\n'), '', 'absent is empty');
+  assert.equal(await effective('#WEBHOOK_SECRET=commented\n'), '', 'a comment is not an assignment');
 });

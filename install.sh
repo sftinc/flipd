@@ -101,6 +101,24 @@ elif [ -n "$HOST" ]; then
     printf 'PUBLIC_HOST=%s\n' "$HOST" >> /etc/flipd/flipd.conf
   fi
   say "set PUBLIC_HOST=$HOST in /etc/flipd/flipd.conf"
+  # With PUBLIC_HOST set the service requires WEBHOOK_SECRET, and a conf that
+  # predates --host can legitimately lack one: a hand-written file, or a box
+  # that ran SSH-only (PUBLIC_HOST is the HTTP switch, and without it the
+  # secret is optional). The check reads the value the daemon would -- the
+  # LAST assignment, whitespace around the key and '=' allowed as parseKV
+  # allows it (ASCII only: LC_ALL=C above), so ' WEBHOOK_SECRET = ' after a
+  # real one reads as empty here too. Normalise rather than append: the
+  # signed ping below and the webhook recipe both read the secret with
+  # `sed -n 's/^WEBHOOK_SECRET=//p'`, which prints every matching line, so a
+  # second line would sign the ping over two values. A non-empty secret is
+  # never rewritten.
+  EFFECTIVE=$(sed -n 's/^[[:space:]]*WEBHOOK_SECRET[[:space:]]*=[[:space:]]*//p' /etc/flipd/flipd.conf | tail -n1)
+  if [ -z "$EFFECTIVE" ]; then
+    SECRET=$(node -p 'require("crypto").randomBytes(32).toString("hex")')
+    sed -i '/^[[:space:]]*WEBHOOK_SECRET[[:space:]]*=/d' /etc/flipd/flipd.conf
+    printf 'WEBHOOK_SECRET=%s\n' "$SECRET" >> /etc/flipd/flipd.conf
+    say "WEBHOOK_SECRET was missing or empty; wrote a new one (PUBLIC_HOST makes it required)"
+  fi
 fi
 # Unconditional, on every run, whether the file was just created, just edited
 # for --host, or untouched this time: an operator who hand-writes this file
@@ -334,9 +352,11 @@ fi
 if [ -z "$HOST" ]; then
   cat <<EOF
 
-no --host given, so Caddy was not touched. To terminate TLS, put this in your Caddyfile and reload caddy:
+no --host given, so Caddy was not touched, and flipd starts no webhook listener until PUBLIC_HOST is set.
+To terminate TLS yourself: put this in your Caddyfile, reload caddy, and set PUBLIC_HOST=<that name> in /etc/flipd/flipd.conf (without it there is no webhook listener to proxy to):
 $(printf '%s\n' "$CADDY_BLOCK" | sed 's/^/  /')
 or re-run:  sudo $0 --host deploy.example.com
+No HTTP at all? Trigger deploys over SSH instead: docs/triggering-over-ssh.md
 EOF
 fi
 
