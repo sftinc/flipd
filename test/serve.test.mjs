@@ -668,3 +668,60 @@ test('no PUBLIC_HOST: no hook listener, no secret needed, and both the shutdown 
   await assert.rejects(serve({ paths: p, journal: () => {} }), (e) => e.code === 'ERR_FS_EISDIR');
   await fs.rm(p.sock, { recursive: true, force: true });
 });
+
+test('trigger over the socket is the webhook without a payload: queued as webhook via ssh, coalesces mid-run, labelled everywhere', async () => {
+  const p = await makePrefix();
+  await writeMain(p, '', { publicHost: null });   // no HTTP door at all; the socket is the way in
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: true, accepted: true });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r');
+    // A second trigger while the first runs coalesces, and is still accepted:
+    // the push is covered by work already accepted, as the hook answers 202.
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: true, accepted: true, reason: 'running; will run again after' });
+    await waitIdle(p);
+    const s = await readState(p.repoDir('r'));
+    assert.equal(s.last.trigger, 'coalesced', 'the catch-up rerun is labelled for what it is');
+    const events = await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
+    assert.match(events, /queued ssh\n/);
+    assert.match(events, /queued ssh \(running; will run again after\)\n/);
+    assert.match(events, /started \S+ ssh /);
+    assert.match(events, /started \S+ coalesced /);
+    assert.ok(lines.includes('[r] ssh ok'), `journald uses the label too: ${lines}`);
+    assert.ok(lines.some((l) => /^\[r\] coalesced (ok|skipped)$/.test(l)), `and for the rerun: ${lines}`);
+    // An unknown repo throws as it does for run.
+    assert.equal((await sendCommand(p.sock, { cmd: 'trigger', name: 'nope' })).ok, false);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('trigger while pending or with an unreadable state is refused, in the hook\'s words, in both sinks, and nothing is queued', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const dir = p.repoDir('r');
+  await fs.mkdir(dir, { recursive: true });
+  await writeState(dir, { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha: 'x' }, b: { sha: 'y' } } });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    // --wait on a refusal answers at once: there is nothing to wait for.
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r', wait: true }), { ok: false, refused: 'pending b' });
+    assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /refused pending b; run flipd rollback r or flipd run r\n/);
+    assert.ok(lines.includes('[r] refused a trigger: pending b; run flipd rollback r or flipd run r'), `journald: ${lines}`);
+    assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, []);
+    await fs.writeFile(path.join(dir, 'state.json'), 'not json');
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: false, refused: 'state.json is unreadable' });
+    assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /refused state\.json is unreadable/);
+    assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, []);
+  } finally {
+    await svc.close();
+  }
+});
