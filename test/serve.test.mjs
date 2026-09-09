@@ -754,3 +754,79 @@ test('trigger during shutdown is refused as stopping, in both sinks, with the tr
     await closing;
   }
 });
+
+test('trigger --wait holds the reply until the covering attempt settles: ok, then skipped, then a failure', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const wait = () => sendCommand(p.sock, { cmd: 'trigger', name: 'r', wait: true }, { timeoutMs: null });
+    assert.deepEqual(await wait(), { ok: true, outcome: 'ok' });
+    assert.deepEqual(await wait(), { ok: true, outcome: 'skipped' }, 'already live: the webhook rule, not run\'s override');
+    await src.commit({ a: '2' });
+    await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'false', DEPLOY: 'true' });
+    assert.deepEqual(await wait(), { ok: true, outcome: 'build failed' });
+  } finally {
+    await svc.close();
+  }
+});
+
+test('trigger --wait: a conf that breaks before the worker reaches it answers config failed', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    await sendCommand(p.sock, { cmd: 'run', name: 'r1' });   // holds the worker
+    const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r2', wait: true }, { timeoutMs: null });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).queued.includes('r2'));
+    await fs.writeFile(p.repoConf('r2'), 'nonsense\n');   // the handler already loaded it; the worker will not
+    assert.deepEqual(await waiting, { ok: true, outcome: 'config failed' });
+  } finally {
+    await svc.close();
+  }
+});
+
+test('trigger --wait: a client that goes away does not cancel the build', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    await new Promise((resolve) => {
+      const conn = net.createConnection(p.sock);
+      conn.on('error', () => {});
+      conn.on('connect', () => conn.write(`${JSON.stringify({ cmd: 'trigger', name: 'r', wait: true })}\n`));
+      setTimeout(() => { conn.destroy(); resolve(); }, 200);
+    });
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).last.outcome, 'ok', 'the build ran to completion');
+  } finally {
+    await svc.close();
+  }
+});
+
+test('close answers an open trigger --wait with stopping when its entry is dropped', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'sleep 5', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  await sendCommand(p.sock, { cmd: 'run', name: 'r1' });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+  const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r2', wait: true }, { timeoutMs: null });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).queued.includes('r2'));
+  const closing = svc.close();
+  assert.deepEqual(await waiting, { ok: false, refused: 'stopping' });
+  await closing;
+});
