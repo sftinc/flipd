@@ -118,6 +118,7 @@ Flags, exit codes, and which need `sudo`: [docs/commands.md](docs/commands.md).
 | [build-and-deploy.md](docs/build-and-deploy.md) | the contract both run under and the environment they see |
 | [commands.md](docs/commands.md) | full reference: flags, exit codes, sudo and the `flipd` group |
 | [operating.md](docs/operating.md) | day to day, `check` in cron, what `pending` means |
+| [triggering-over-ssh.md](docs/triggering-over-ssh.md) | a box with no HTTP door: `flipd trigger` over a forced-command SSH key, and a CI job that goes red on a failed deploy |
 | [layout.md](docs/layout.md) | every path flipd writes |
 | [deploy-recipes.md](docs/deploy-recipes.md) | worked `DEPLOY` commands, one per kind of thing served |
 | [serving-with-caddy.md](docs/serving-with-caddy.md) | the site block that makes the app reachable |
