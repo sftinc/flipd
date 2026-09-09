@@ -32,13 +32,16 @@ Assert the *property*, not the implementation. Two examples worth copying:
   execute it** (root-only, no undo). When asserting structure, check nesting and
   not ordering — `spanOf()` exists because "between `log {` and `handle`" also
   passes when a directive has been moved out of the block it belongs in. One
-  test goes a step further without crossing the line: it extracts the literal
-  `sed` pipeline `install.sh` uses to read `WEBHOOK_SECRET`'s effective value
-  and runs *that pipeline* — asserted first to be the exact text present in the
-  script — against a temp conf file it creates itself. That exercises the
-  pipeline's own behaviour (last assignment wins, whitespace tolerated) without
-  ever invoking `install.sh`; the installer stays unexecuted, only a few words
-  of shell it happens to contain are.
+  test goes a step further without crossing the line: it extracts the body of
+  `read_secret()` — the function `install.sh` reads `WEBHOOK_SECRET` through —
+  and runs *that* against a temp conf file it creates itself. That exercises the
+  reader's own behaviour (last assignment wins, whitespace on either side is
+  separator rather than value) without ever invoking `install.sh`; the installer
+  stays unexecuted, only a few words of shell it happens to contain are.
+  `recipe.test.mjs` does the same to the recipe's own copy of that pipeline,
+  which is what keeps the two from drifting apart. Neither strips more than the
+  trailing newline from the output — a `.trim()` there would pass against a
+  reader that leaves whitespace on the value, which is the bug they exist for.
 
 ## Before you trust a new test
 
