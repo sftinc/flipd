@@ -24,6 +24,7 @@ blocks the next webhook build until someone looks.
 | **Rollback that means it** | `flipd rollback` re-runs the `DEPLOY` recorded with that release, not whatever the conf says now. |
 | **A failed deploy blocks the next build** | An unconfirmed release stays `pending` until you settle it, so a broken deploy is never buried by the next push. |
 | **Path filters and subdirectories** | `WATCH` and `IGNORE` globs and `ROOT`, so one project in a monorepo builds only when its own files change. |
+| **Push without deploying** | Follow a branch you only push to when you mean it: `git push` is a backup, `git push origin main:deploy` is a deploy. |
 | **Survives a restart** | An interrupted attempt is recorded as interrupted, orphaned release directories are cleaned, and an unconfirmed flip is reported rather than built over. |
 | **Config is live** | Repo files are re-read on every event — edit one and the next push uses it, no restart. |
 | **Secrets stay out of logs** | Env-file secrets are masked wherever an attempt's output is written; flipd never prints a token, a key, or the webhook secret. |
