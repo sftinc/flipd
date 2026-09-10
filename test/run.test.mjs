@@ -928,3 +928,26 @@ test('--now with no STOP set changes nothing and logs nothing', async () => {
   assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r', now: true }), 'ok');
   assert.doesNotMatch(await fs.readFile((await t.state()).last.log, 'utf8'), /stop skipped|step stop/);
 });
+
+test('via labels the attempt for a reader everywhere the kind used to, on the normal path and through an unreadable state', async () => {
+  const t = await setup();
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r', via: 'ssh' }), 'ok');
+  let s = await t.state();
+  assert.equal(s.last.trigger, 'ssh');
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /trigger=ssh/);
+  assert.match(await t.events(), /started \S+ ssh /);
+  // An entry with no via is unchanged.
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'ok');
+  s = await t.state();
+  assert.equal(s.last.trigger, 'manual');
+  // The unreadable-state path opens its own attempt log and events line; the
+  // label must be the same there — this path is reachable when state.json goes
+  // bad between the handler's pre-check and the worker.
+  await fs.writeFile(path.join(t.p.repoDir('r'), 'state.json'), '{ truncated');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r', via: 'ssh' }), 'fetch failed');
+  const texts = await Promise.all((await t.logs()).map((n) => fs.readFile(path.join(t.p.repoLog('r'), n), 'utf8')));
+  const failed = texts.find((x) => /state\.json is unreadable/.test(x));
+  assert.ok(failed, 'the failed attempt has a log');
+  assert.match(failed, /trigger=ssh/);
+  assert.equal((await t.events()).match(/started \S+ ssh /g).length, 2, 'both ssh attempts are labelled in events.log');
+});

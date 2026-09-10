@@ -78,9 +78,25 @@ test('parseRepo: a REPO carrying credentials is refused, and the refusal never e
 test('parseMain: defaults and validation', () => {
   const m = parseMain('WEBHOOK_SECRET=s\n');
   assert.deepEqual(m, { listen: { host: '127.0.0.1', port: 9000 }, publicHost: null, webhookSecret: 's', keep: 5, logKeep: 50, logMaxBytes: 52428800 });
-  assert.throws(() => parseMain('LISTEN=127.0.0.1:9000'), /WEBHOOK_SECRET/);
   assert.throws(() => parseMain('WEBHOOK_SECRET=s\nKEEP=five'), /KEEP/);
   assert.equal(parseMain('WEBHOOK_SECRET=s\nLISTEN=0.0.0.0:80\nPUBLIC_HOST=d.example.com').listen.port, 80);
+});
+
+test('parseMain: WEBHOOK_SECRET is required only when PUBLIC_HOST is set; LISTEN is validated either way', () => {
+  // No PUBLIC_HOST: no listener will bind, so nothing needs a secret.
+  const off = parseMain('LISTEN=127.0.0.1:0\n');
+  assert.equal(off.publicHost, null);
+  assert.equal(off.webhookSecret, null);
+  assert.deepEqual(off.listen, { host: '127.0.0.1', port: 0 });
+  // A secret that is present but unused is fine: the installer always writes one.
+  assert.equal(parseMain('WEBHOOK_SECRET=s\n').webhookSecret, 's');
+  // PUBLIC_HOST set: the secret is required, and empty counts as missing.
+  assert.throws(() => parseMain('PUBLIC_HOST=d.example.com\nLISTEN=127.0.0.1:0\n'), (e) => e instanceof ConfigError && /^WEBHOOK_SECRET is required/.test(e.message));
+  assert.throws(() => parseMain('PUBLIC_HOST=d.example.com\nWEBHOOK_SECRET=\n'), /WEBHOOK_SECRET is required/);
+  assert.equal(parseMain('PUBLIC_HOST=d.example.com\nWEBHOOK_SECRET=s\n').webhookSecret, 's');
+  // LISTEN is still parsed and still refused when malformed, host or no host.
+  assert.throws(() => parseMain('LISTEN=nonsense\n'), /LISTEN must be host:port/);
+  assert.throws(() => parseMain('PUBLIC_HOST=d.example.com\nWEBHOOK_SECRET=s\nLISTEN=nonsense\n'), /LISTEN must be host:port/);
 });
 
 test('parseRepo: defaults, required keys, name and ROOT rules', () => {

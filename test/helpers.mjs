@@ -74,9 +74,15 @@ export async function makeSourceRepo() {
   return { dir, url: `file://${dir}`, commit, git: g };
 }
 
-export async function writeMain(p, extra = '') {
+// PUBLIC_HOST by default, because a conf without it starts no hook listener
+// (PUBLIC_HOST is the HTTP switch) and most tests here want one to POST at.
+// Pass { publicHost: null } for a box with no HTTP door.
+export async function writeMain(p, extra = '', { publicHost = 'deploy.example.com' } = {}) {
   await fs.mkdir(path.dirname(p.mainConf), { recursive: true });
-  await fs.writeFile(p.mainConf, `WEBHOOK_SECRET=testsecret\nLISTEN=127.0.0.1:0\n${extra}`);
+  // A handful of call sites already pass their own PUBLIC_HOST=... in extra;
+  // skip the default line then so the fixture never carries the key twice.
+  const host = publicHost && !/^PUBLIC_HOST=/m.test(extra) ? `PUBLIC_HOST=${publicHost}\n` : '';
+  await fs.writeFile(p.mainConf, `WEBHOOK_SECRET=testsecret\nLISTEN=127.0.0.1:0\n${host}${extra}`);
 }
 
 export async function writeRepoConf(p, name, kv) {

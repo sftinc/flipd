@@ -80,6 +80,19 @@ install -d -m 0750 -o root -g flipd /etc/flipd /etc/flipd/repos /etc/flipd/env
 install -d -m 0750 -o flipd -g flipd /var/lib/flipd /var/lib/flipd/.ssh /var/log/flipd
 say "created /etc/flipd  /var/lib/flipd  /var/log/flipd"
 
+# Read WEBHOOK_SECRET out of a conf the way lib/config.mjs's parseKV reads it:
+# the LAST assignment wins, and whitespace around the key, the '=' and the
+# value is separator rather than value (ASCII only -- LC_ALL=C above). Every
+# reader of this file has to agree with the daemon or they disagree in
+# silence: ' WEBHOOK_SECRET = abc ' is a legal hand-written line that the
+# daemon reads as "abc", and a strict '^WEBHOOK_SECRET=' reader finds nothing
+# in it at all, so the signed ping below would sign under an empty secret and
+# get back a 401 that says nothing about why. The value is never echoed --
+# callers capture it into a variable and hand it on through the environment.
+read_secret() {
+  sed -n 's/^[[:space:]]*WEBHOOK_SECRET[[:space:]]*=[[:space:]]*//p' "$1" | tail -n1 | sed 's/[[:space:]]*$//'
+}
+
 # 4. main config
 if [ ! -f /etc/flipd/flipd.conf ]; then
   SECRET=$(node -p 'require("crypto").randomBytes(32).toString("hex")')
@@ -101,6 +114,22 @@ elif [ -n "$HOST" ]; then
     printf 'PUBLIC_HOST=%s\n' "$HOST" >> /etc/flipd/flipd.conf
   fi
   say "set PUBLIC_HOST=$HOST in /etc/flipd/flipd.conf"
+  # With PUBLIC_HOST set the service requires WEBHOOK_SECRET, and a conf that
+  # predates --host can legitimately lack one: a hand-written file, or a box
+  # that ran SSH-only (PUBLIC_HOST is the HTTP switch, and without it the
+  # secret is optional). read_secret reads what the daemon reads, so
+  # ' WEBHOOK_SECRET = ' after a real one is empty here too. Normalise rather
+  # than append: appending would leave two assignments for one key, and the
+  # dead one sits above the live one -- which is the one an operator reading
+  # this file to find the secret by eye would copy into a forge's webhook
+  # form. A non-empty secret is never rewritten; it is already in that form.
+  EFFECTIVE=$(read_secret /etc/flipd/flipd.conf)
+  if [ -z "$EFFECTIVE" ]; then
+    SECRET=$(node -p 'require("crypto").randomBytes(32).toString("hex")')
+    sed -i '/^[[:space:]]*WEBHOOK_SECRET[[:space:]]*=/d' /etc/flipd/flipd.conf
+    printf 'WEBHOOK_SECRET=%s\n' "$SECRET" >> /etc/flipd/flipd.conf
+    say "WEBHOOK_SECRET was missing or empty; wrote a new one (PUBLIC_HOST makes it required)"
+  fi
 fi
 # Unconditional, on every run, whether the file was just created, just edited
 # for --host, or untouched this time: an operator who hand-writes this file
@@ -289,7 +318,7 @@ if [ -n "$HOST" ]; then
   # Prove the path end to end: a ping signed with this box's secret gets "pong"
   # from flipd and nothing else. (Caddy stamps its own Server header on proxied
   # responses too, so a bare 404 could never tell the two apart.)
-  SECRET=$(sed -n 's/^WEBHOOK_SECRET=//p' /etc/flipd/flipd.conf)
+  SECRET=$(read_secret /etc/flipd/flipd.conf)
   BODY='{"zen":"install check"}'
   # SECRET reaches node through the environment, not argv: an argument would be
   # published for the life of this process in /proc/<pid>/cmdline, readable by
@@ -334,9 +363,11 @@ fi
 if [ -z "$HOST" ]; then
   cat <<EOF
 
-no --host given, so Caddy was not touched. To terminate TLS, put this in your Caddyfile and reload caddy:
+no --host given, so Caddy was not touched, and flipd starts no webhook listener until PUBLIC_HOST is set.
+To terminate TLS yourself: put this in your Caddyfile, reload caddy, and set PUBLIC_HOST=<that name> in /etc/flipd/flipd.conf (without it there is no webhook listener to proxy to):
 $(printf '%s\n' "$CADDY_BLOCK" | sed 's/^/  /')
 or re-run:  sudo $0 --host deploy.example.com
+No HTTP at all? Trigger deploys over SSH instead: docs/triggering-over-ssh.md
 EOF
 fi
 

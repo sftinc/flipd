@@ -13,6 +13,8 @@ from you:
 `add` generates a read-only deploy key, writes the repo conf, and prints the key
 to add on the forge along with the webhook to create — Payload URL, where the
 secret is, and a `gh api` pipeline if you would rather not click through a form.
+On a box with no `PUBLIC_HOST` there is no webhook to create, and `add` prints
+the SSH trigger recipe instead — see [triggering-over-ssh.md](triggering-over-ssh.md).
 
 ## With an account, `add` does both steps for you
 

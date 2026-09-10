@@ -56,10 +56,17 @@ They are documented in `docs/commands.md` and scripts depend on them.
 catch-up in `docs/operating.md` keys on `4`, and must not force-build over a
 failed deploy), `1` a failed row, `3` service down. Do not renumber.
 
-## The webhook recipe
+## The recipes
 
-`recipe.mjs` renders it; `add` and `check` both print it. It must keep the secret
-off argv — into `node` through the environment, into `gh api` through `--input -`
-on stdin — and `test/recipe.test.mjs` holds those properties at the source. `add`
-refuses to run twice, which is why `check` can print the recipe again once
-`PUBLIC_HOST` is known.
+`recipe.mjs` renders two. The webhook recipe is printed by `add` and `check`
+when `PUBLIC_HOST` is known; it must keep the secret off argv — into `node`
+through the environment, into `gh api` through `--input -` on stdin — and
+`test/recipe.test.mjs` holds those properties at the source. `add` refuses to
+run twice, which is why `check` can print the recipe again once `PUBLIC_HOST`
+is known. The SSH recipe (`sshRecipe`) is printed instead when the conf loads
+without `PUBLIC_HOST`: the operator's steps with the repo name and this
+clone's `bin/flipd` filled in. It is instructions only — flipd generates no
+key, creates no user and writes nothing under `~/.ssh` — and carries no
+secret, because the private half of that key never exists on the box.
+`trigger.mjs` is the verb the forced command runs; its `sendOverride` takes
+`(msg, opts)` so a test can see `--wait` disarm the client timeout.

@@ -140,3 +140,154 @@ test('a throwing onError does not wedge the queue and its error surfaces rather 
     globalThis.queueMicrotask = realQueueMicrotask;
   }
 });
+
+test('the catch-up rerun after run-again is labelled coalesced: the queue kept only the name, never who asked', async () => {
+  const ran = [];
+  let g = gate();
+  const q = createQueue(async (e) => { ran.push(e); await g.p; });
+  q.enqueue({ kind: 'webhook', name: 'a' });                 // running
+  q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });     // sets run-again
+  const first = g;
+  g = gate();
+  first.open();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(ran.length, 2, 'ran again exactly once');
+  assert.equal(ran[1].kind, 'webhook', 'still the webhook kind: every kind === webhook rule applies');
+  assert.equal(ran[1].via, 'coalesced');
+  g.open();
+  await q.drain();
+});
+
+test('settled: completed with the runner return, crashed with the message; never a rejection', async () => {
+  const q = createQueue(async (e) => { if (e.name === 'boom') throw new Error('bad'); return 'ok'; }, { onError: () => {} });
+  const a = q.enqueue({ kind: 'webhook', name: 'a' });
+  const b = q.enqueue({ kind: 'webhook', name: 'boom' });
+  assert.deepEqual(await a.covered, { done: 'completed', outcome: 'ok' });
+  assert.deepEqual(await b.covered, { done: 'crashed', error: 'bad' });
+  await q.drain();
+});
+
+test('a runner that rejects with null, or throws a bare string, still crashes the entry and does not wedge the queue', async () => {
+  // e.message on a nullish or string rejection throws a TypeError inside
+  // kick()'s catch — un-awaited, so it would escape, skip the trailing
+  // kick(), and stop the single worker from ever draining again.
+  const q = createQueue(
+    async (e) => { if (e.name === 'nully') throw null; throw 'plain string'; },
+    { onError: () => {} },
+  );
+  const a = q.enqueue({ kind: 'webhook', name: 'nully' });
+  const b = q.enqueue({ kind: 'webhook', name: 'stringy' });
+  assert.deepEqual(await a.covered, { done: 'crashed', error: 'null' });
+  assert.deepEqual(await b.covered, { done: 'crashed', error: 'plain string' });
+  await q.drain();
+});
+
+test('a throwing runner with nobody awaiting settled leaves no unhandled rejection', async () => {
+  // The hook, run and rollback all discard the enqueue result. If settled
+  // rejected, every crash with no --wait attached would be a process-ending
+  // unhandledRejection, undoing the recovery kick() already does.
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const q = createQueue(async () => { throw new Error('bad'); }, { onError: () => {} });
+    q.enqueue({ kind: 'webhook', name: 'a' });
+    await q.drain();
+    // An unhandledRejection fires on a later turn than the rejection itself;
+    // drain() alone can resolve before that turn runs, so give it one.
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('covered: a fresh entry, an already-queued duplicate, and a run-again token all settle on the covering attempt', async () => {
+  const hold = gate();
+  const q = createQueue(async (e) => { if (e.name === 'x' && !e.via) await hold.p; return `${e.via ?? e.kind}:${e.name}`; });
+  q.enqueue({ kind: 'webhook', name: 'x' });                                 // running
+  const fresh = q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });
+  const dup = q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });
+  assert.equal(fresh.queued, true);
+  assert.equal(dup.queued, false);
+  assert.equal(dup.reason, 'already queued');
+  assert.equal(dup.covered, fresh.covered, 'the duplicate is covered by the entry already there');
+  const again1 = q.enqueue({ kind: 'webhook', name: 'x', via: 'ssh' });
+  const again2 = q.enqueue({ kind: 'webhook', name: 'x', via: 'ssh' });
+  assert.equal(again1.reason, 'running; will run again after');
+  assert.equal(again1.covered, again2.covered, 'one rerun covers both triggers');
+  hold.open();
+  await q.drain();
+  assert.deepEqual(await fresh.covered, { done: 'completed', outcome: 'ssh:a' });
+  assert.deepEqual(await dup.covered, { done: 'completed', outcome: 'ssh:a' });
+  assert.deepEqual(await again1.covered, { done: 'completed', outcome: 'coalesced:x' });
+});
+
+test('covered follows the queue, not time: a trigger behind a queued rollback is its own entry, not the earlier one', async () => {
+  // Repo b running; entries [webhook a, rollback a]; a new trigger for a is a
+  // third entry because dedup looks only past the last rollback. All three
+  // start "after acceptance"; only the third covers the trigger.
+  const hold = gate();
+  const q = createQueue(async (e) => { if (e.name === 'b') await hold.p; return `${e.kind}:${e.name}:${e.via ?? ''}`; });
+  q.enqueue({ kind: 'webhook', name: 'b' });
+  const first = q.enqueue({ kind: 'webhook', name: 'a' });
+  q.enqueue({ kind: 'rollback', name: 'a', target: 'r1' });
+  const third = q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });
+  assert.equal(third.queued, true);
+  assert.notEqual(third.covered, first.covered);
+  hold.open();
+  await q.drain();
+  assert.deepEqual(await first.covered, { done: 'completed', outcome: 'webhook:a:' });
+  assert.deepEqual(await third.covered, { done: 'completed', outcome: 'webhook:a:ssh' });
+});
+
+test('covered: a trigger during a run, with a rollback queued meanwhile, settles on the rerun behind the rollback', async () => {
+  const hold = gate();
+  const seq = [];
+  const q = createQueue(async (e) => { seq.push(`${e.via ?? e.kind}:${e.name}`); if (seq.length === 1) await hold.p; return seq[seq.length - 1]; });
+  q.enqueue({ kind: 'webhook', name: 'a' });                                   // running
+  const t = q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });             // run-again token
+  q.enqueue({ kind: 'rollback', name: 'a', target: 'r1' });                    // lands before the rerun does
+  hold.open();
+  await q.drain();
+  assert.deepEqual(seq, ['webhook:a', 'rollback:a', 'coalesced:a']);
+  assert.deepEqual(await t.covered, { done: 'completed', outcome: 'coalesced:a' }, 'not the rollback');
+});
+
+test('covered: a manual run queued during the build covers the rerun, so the token is not orphaned', async () => {
+  const hold = gate();
+  const seq = [];
+  const q = createQueue(async (e) => { seq.push(`${e.via ?? e.kind}:${e.name}`); if (seq.length === 1) await hold.p; return seq[seq.length - 1]; });
+  q.enqueue({ kind: 'webhook', name: 'a' });                                   // running
+  const t = q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });             // run-again token
+  assert.equal(q.enqueue({ kind: 'manual', name: 'a' }).queued, true, 'accepted: manual dedups only against manual');
+  hold.open();
+  await q.drain();
+  assert.deepEqual(seq, ['webhook:a', 'manual:a'], 'the catch-up found the manual as a duplicate and created nothing');
+  assert.deepEqual(await t.covered, { done: 'completed', outcome: 'manual:a' });
+});
+
+test('stop settles discarded entries — including a rollback queued via commit() — and an outstanding run-again token as stopping; the running attempt, started via enqueueIfIdle, keeps its real outcome', async () => {
+  const hold = gate();
+  const q = createQueue(async (e) => { if (e.name === 'a') await hold.p; return 'ok'; });
+  // Started via enqueueIfIdle rather than enqueue, so this test also proves
+  // that path's entry.settled works end-to-end. It can only prove that by
+  // outliving stop(), not by being discarded: enqueueIfIdle only ever queues
+  // onto an idle worker, and kick() shifts the entry into `running`
+  // synchronously in that same call — it can never still be sitting in
+  // `entries` for stop() to find and discard.
+  const running = q.enqueueIfIdle({ kind: 'check', name: 'a' });
+  const token = q.enqueue({ kind: 'webhook', name: 'a', via: 'ssh' });
+  const queued = q.enqueue({ kind: 'webhook', name: 'b' });
+  // A rollback queued via a reservation's commit(), not a raw enqueue call —
+  // proving that path's entry.settled is real too, since stop() would throw
+  // on an entry that lacked one.
+  const rollback = q.reserveRollback('a').commit('r1');
+  q.stop();
+  assert.deepEqual(await queued.covered, { done: 'stopping' });
+  assert.deepEqual(await token.covered, { done: 'stopping' });
+  assert.deepEqual(await rollback.covered, { done: 'stopping' });
+  hold.open();
+  await q.drain();
+  assert.deepEqual(await running.covered, { done: 'completed', outcome: 'ok' });
+});

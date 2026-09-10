@@ -277,7 +277,7 @@ test('serve closes the hook server if the socket fails to start, so a retry can 
   const p = await makePrefix();
   const port = await getFreePort();
   await fs.mkdir(path.dirname(p.mainConf), { recursive: true });
-  await fs.writeFile(p.mainConf, `WEBHOOK_SECRET=testsecret\nLISTEN=127.0.0.1:${port}\n`);
+  await fs.writeFile(p.mainConf, `WEBHOOK_SECRET=testsecret\nLISTEN=127.0.0.1:${port}\nPUBLIC_HOST=deploy.example.com\n`);
   // Occupy the socket's path with something createSocketServer cannot bind
   // to: a directory makes its very first `fs.rm(sockPath, {force:true})`
   // throw before it ever attempts to listen — the same "throws after the
@@ -638,6 +638,235 @@ test('now on run and rollback reaches the worker and skips STOP; without it STOP
     const events = await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
     assert.match(events, /queued manual --now\n/);
     assert.match(events, /rollback queued, target \S+ --now\n/);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('no PUBLIC_HOST: no hook listener, no secret needed, and both the shutdown and the failed-socket-bind paths survive the null hook', async () => {
+  const p = await makePrefix();
+  await fs.mkdir(path.dirname(p.mainConf), { recursive: true });
+  await fs.writeFile(p.mainConf, 'LISTEN=127.0.0.1:0\n');   // no PUBLIC_HOST, no WEBHOOK_SECRET
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    assert.equal(svc.hookPort, null);
+    assert.ok(lines.includes('webhook listener off: PUBLIC_HOST is not set'), `journal: ${lines}`);
+    assert.ok(!lines.some((l) => /listening on/.test(l)), 'nothing claims to listen');
+    const st = await sendCommand(p.sock, { cmd: 'status' });
+    assert.equal(st.ok, true, 'the socket is up regardless: SSH triggers, run and rollback all go through it');
+  } finally {
+    await svc.close();   // the shutdown path with hook === null
+  }
+  // The socket-bind-failure path, which closes the hook server when there is
+  // one: a directory at the socket path makes createSocketServer's own
+  // fs.rm throw ERR_FS_EISDIR. Matching that code, not just any rejection,
+  // is what pins the `if (hook)` guard: drop the guard and hook.close(r) is
+  // called on null instead, which rejects with a TypeError and would slip
+  // past a bare assert.rejects unnoticed.
+  await fs.mkdir(p.sock);
+  await assert.rejects(serve({ paths: p, journal: () => {} }), (e) => e.code === 'ERR_FS_EISDIR');
+  await fs.rm(p.sock, { recursive: true, force: true });
+});
+
+test('trigger over the socket is the webhook without a payload: queued as webhook via ssh, coalesces mid-run, labelled everywhere', async () => {
+  const p = await makePrefix();
+  await writeMain(p, '', { publicHost: null });   // no HTTP door at all; the socket is the way in
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: true, accepted: true });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r');
+    // A second trigger while the first runs coalesces, and is still accepted:
+    // the push is covered by work already accepted, as the hook answers 202.
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: true, accepted: true, reason: 'running; will run again after' });
+    await waitIdle(p);
+    const s = await readState(p.repoDir('r'));
+    assert.equal(s.last.trigger, 'coalesced', 'the catch-up rerun is labelled for what it is');
+    const events = await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
+    assert.match(events, /queued ssh\n/);
+    assert.match(events, /queued ssh \(running; will run again after\)\n/);
+    assert.match(events, /started \S+ ssh /);
+    assert.match(events, /started \S+ coalesced /);
+    assert.ok(lines.includes('[r] ssh ok'), `journald uses the label too: ${lines}`);
+    assert.ok(lines.some((l) => /^\[r\] coalesced (ok|skipped)$/.test(l)), `and for the rerun: ${lines}`);
+    // An unknown repo throws as it does for run.
+    assert.equal((await sendCommand(p.sock, { cmd: 'trigger', name: 'nope' })).ok, false);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('trigger while pending or with an unreadable state is refused, in the hook\'s words, in both sinks, and nothing is queued', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const dir = p.repoDir('r');
+  await fs.mkdir(dir, { recursive: true });
+  await writeState(dir, { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha: 'x' }, b: { sha: 'y' } } });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    // --wait on a refusal answers at once: there is nothing to wait for.
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r', wait: true }), { ok: false, refused: 'pending b' });
+    assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /refused pending b; run flipd rollback r or flipd run r\n/);
+    assert.ok(lines.includes('[r] refused a trigger: pending b; run flipd rollback r or flipd run r'), `journald: ${lines}`);
+    assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, []);
+    await fs.writeFile(path.join(dir, 'state.json'), 'not json');
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: false, refused: 'state.json is unreadable' });
+    assert.match(await fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8'), /refused state\.json is unreadable/);
+    assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, []);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('trigger during shutdown is refused as stopping, in both sinks, with the trigger door\'s own recovery advice, and nothing is queued', async () => {
+  const p = await makePrefix();
+  await writeMain(p, '', { publicHost: null });   // no HTTP door; only the socket is under test
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  // Same technique as the webhook's shutdown test above: close() runs
+  // queue.stop() and abort.abort() synchronously before its first await, so
+  // `stopping` is guaranteed the instant svc.close() returns — no waitFor,
+  // no race. r1's BUILD never actually runs (the abort lands during
+  // fetch/checkout); r2 needs no reachable REPO because the refusal returns
+  // before any fetch is attempted.
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'trap "" TERM; sleep 5', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: 'git@github.com:o/r2.git', BUILD: 'true', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r1' }), { ok: true, accepted: true });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+  const closing = svc.close();   // queue.stop() has run by the time this returns
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r2' }), { ok: false, refused: 'stopping' });
+    assert.match(await fs.readFile(path.join(p.repoLog('r2'), 'events.log'), 'utf8'), /refused stopping\n/);
+    // The record itself does not distinguish doors — only journald's advice does.
+    assert.ok(lines.some((l) => l === '[r2] refused a trigger: stopping; trigger again once flipd is back'), `journald: ${lines}`);
+    assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, []);
+  } finally {
+    await closing;
+  }
+});
+
+test('trigger --wait holds the reply until the covering attempt settles: ok, then skipped, then a failure', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const wait = () => sendCommand(p.sock, { cmd: 'trigger', name: 'r', wait: true }, { timeoutMs: null });
+    assert.deepEqual(await wait(), { ok: true, outcome: 'ok' });
+    assert.deepEqual(await wait(), { ok: true, outcome: 'skipped' }, 'already live: the webhook rule, not run\'s override');
+    await src.commit({ a: '2' });
+    await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'false', DEPLOY: 'true' });
+    assert.deepEqual(await wait(), { ok: true, outcome: 'build failed' });
+  } finally {
+    await svc.close();
+  }
+});
+
+test('trigger --wait: a conf that breaks before the worker reaches it answers config failed', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    await sendCommand(p.sock, { cmd: 'run', name: 'r1' });   // holds the worker
+    const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r2', wait: true }, { timeoutMs: null });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).queued.includes('r2'));
+    await fs.writeFile(p.repoConf('r2'), 'nonsense\n');   // the handler already loaded it; the worker will not
+    assert.deepEqual(await waiting, { ok: true, outcome: 'config failed' });
+  } finally {
+    await svc.close();
+  }
+});
+
+test('trigger --wait: a client that goes away does not cancel the build', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const conn = net.createConnection(p.sock);
+    conn.on('error', () => {});
+    conn.on('connect', () => conn.write(`${JSON.stringify({ cmd: 'trigger', name: 'r', wait: true })}\n`));
+    // Wait for the build to actually be in flight before dropping the
+    // connection, rather than a fixed delay: a fixed delay only proves the
+    // build ran within *some* window, and under load (this is the slowest
+    // file in the suite, running concurrently with other files) it can elapse
+    // before the handler's readState + enqueue have even finished, destroying
+    // the connection before anything was queued at all. Observing `running`
+    // both removes that race and proves the claim the test makes — the
+    // client was still connected when the build actually started.
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r');
+    conn.destroy();
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).last.outcome, 'ok', 'the build ran to completion');
+  } finally {
+    await svc.close();
+  }
+});
+
+test('close answers an open trigger --wait with stopping when its entry is dropped', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'sleep 5', DEPLOY: 'true' });
+  await writeRepoConf(p, 'r2', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    await sendCommand(p.sock, { cmd: 'run', name: 'r1' });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+    const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r2', wait: true }, { timeoutMs: null });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).queued.includes('r2'));
+    const closing = svc.close();
+    assert.deepEqual(await waiting, { ok: false, refused: 'stopping' });
+    await closing;
+  } finally {
+    // svc.close() is memoized (closing is cached and re-returned), so this is
+    // a no-op on the pass-through path above and the safety net if waitFor or
+    // the assertion throws first — without it, a thrown waitFor here leaves a
+    // listening socket server behind for the rest of the run, in the file
+    // that other tests are least able to afford it in.
+    await svc.close();
+  }
+});
+
+test('trigger --wait against a repo already building follows the coalesced rerun, not the build already in flight', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'sleep 1', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: true, accepted: true });
+    await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r');
+    // A wrong handler that only awaits `covered` when `enqueue` reports
+    // `queued: true` would answer `accepted` immediately here too — this is
+    // the branch that catches it: `r` is already building, so this trigger's
+    // `covered` is the queue's promise for the *rerun* the running build owes
+    // afterwards (queue.mjs's `runAgain`), not the build already in flight.
+    // Following the wrong one would answer for a push this trigger never saw.
+    const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r', wait: true }, { timeoutMs: null });
+    assert.deepEqual(await waiting, { ok: true, outcome: 'skipped' }, 'the rerun sees the same head the in-flight build is about to make live, so it has nothing to do');
+    const s = await readState(p.repoDir('r'));
+    assert.equal(s.last.trigger, 'coalesced', 'confirms the reply was answered for the rerun entry, not the build already running');
   } finally {
     await svc.close();
   }

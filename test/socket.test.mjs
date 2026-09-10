@@ -147,3 +147,36 @@ test('a client that destroys the connection mid-handler does not crash the serve
     await new Promise((r) => server.close(r));
   }
 });
+
+test('sendCommand with timeoutMs null arms no timer: a slow reply still arrives; a number still times out', async () => {
+  const sock = await newSockPath();
+  const server = await createSocketServer(sock, async () => { await new Promise((r) => setTimeout(r, 150)); return { ok: true }; });
+  try {
+    assert.deepEqual(await sendCommand(sock, { cmd: 'slow' }, { timeoutMs: null }), { ok: true });
+    await assert.rejects(sendCommand(sock, { cmd: 'slow' }, { timeoutMs: 50 }), /socket timeout/);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
+
+test('the handler is given a signal that fires when the client closes before the reply', async () => {
+  const sock = await newSockPath();
+  let fired = false;
+  let release;
+  const held = new Promise((r) => (release = r));
+  const server = await createSocketServer(sock, async (msg, { signal }) => {
+    signal.addEventListener('abort', () => { fired = true; release(); }, { once: true });
+    await held;
+    return { ok: true };
+  });
+  try {
+    await rawRoundTrip(sock, (conn) => {
+      conn.write('{"cmd":"x"}\n');
+      setTimeout(() => conn.destroy(), 50);
+    });
+    await held;
+    assert.equal(fired, true);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});

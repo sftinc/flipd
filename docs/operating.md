@@ -4,6 +4,7 @@
     flipd check app
     flipd log app [--follow]
     flipd run app          # build now, ignoring watch/ignore filters
+    flipd trigger app --wait   # build as a webhook would, and wait for the outcome
     flipd rollback app     # back to the last confirmed release
     sudo flipd env app build --set NPM_TOKEN=...
 
@@ -26,3 +27,9 @@ not fire on `5`: a `pending` release is a failed deploy waiting to be looked
 at, and rebuilding over it unattended is how it never is. `5` outranks `4`,
 so a repo that is both behind and pending stays put until someone runs
 `flipd rollback` or `flipd run` by hand.
+
+`trigger` is the other way to build: it is the webhook as a command, so it
+refuses on `pending` and skips when already live, and it does not need the
+`check` guard — `flipd trigger app` alone is a safe catch-up. It exists for
+a CI job over SSH, where `--wait` also returns the outcome:
+[triggering-over-ssh.md](triggering-over-ssh.md).

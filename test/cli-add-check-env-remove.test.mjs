@@ -136,11 +136,39 @@ test('check prints the webhook recipe with the current PUBLIC_HOST, so it can be
   assert.match(o.out(), /gh api repos\/o\/r\/hooks --method POST --input -/);
   assert.ok(!o.out().includes('testsecret'), 'secret is never printed');
 
-  // Host not known yet: the placeholder, not a crash and not silence.
-  await writeMain(p);
+  // The conf loads without PUBLIC_HOST: no HTTP door, so the SSH recipe.
+  await writeMain(p, '', { publicHost: null });
   const o2 = io();
   assert.equal(await check(['r'], { paths: p, ...o2, sendOverride: send(ok) }), 0);
-  assert.match(o2.out(), /https:\/\/<PUBLIC_HOST>\/deploy/);
+  assert.match(o2.out(), /^ssh\s+trigger this repo over SSH/m);
+  assert.match(o2.out(), /command="\S+\/bin\/flipd trigger r --wait",restrict/);
+  assert.match(o2.out(), /gh secret set FLIPD_SSH_KEY -R o\/r </);
+  assert.ok(!o2.out().includes('Payload URL'));
+  assert.ok(!o2.out().includes('configured off'), 'no HOOK_HOST recorded: nothing to say about a webhook');
+
+  // ...and with a HOOK_HOST recorded by an earlier add: say the webhook is
+  // configured off (this reads the file; the running service may predate the
+  // edit) and where it pointed, then the SSH recipe.
+  await writeRepoConf(p, 'r', { REPO: 'git@github.com:o/r.git', BRANCH: 'main', ROOT: '.', BUILD: 'true', DEPLOY: 'true', HOOK_HOST: 'old.example.com' });
+  const o2b = io();
+  assert.equal(await check(['r'], { paths: p, ...o2b, sendOverride: send(ok) }), 0);
+  assert.match(o2b.out(), /^webhook\s+configured off \(PUBLIC_HOST not set\); recorded endpoint: https:\/\/old\.example\.com\/deploy$/m);
+  assert.match(o2b.out(), /^ssh\s+trigger this repo over SSH/m);
+
+  // loadMain fails (ENOENT here): HOOK_HOST still feeds the webhook recipe.
+  await fs.rm(p.mainConf);
+  const o2c = io();
+  assert.equal(await check(['r'], { paths: p, ...o2c, sendOverride: send(ok) }), 0);
+  assert.match(o2c.out(), /Payload URL\s+https:\/\/old\.example\.com\/deploy/);
+  assert.ok(!o2c.out().includes('trigger this repo over SSH'));
+
+  // No conf and no HOOK_HOST: the placeholder, not a crash and not silence.
+  await writeRepoConf(p, 'r', { REPO: 'git@github.com:o/r.git', BRANCH: 'main', ROOT: '.', BUILD: 'true', DEPLOY: 'true' });
+  const o2d = io();
+  assert.equal(await check(['r'], { paths: p, ...o2d, sendOverride: send(ok) }), 0);
+  assert.match(o2d.out(), /https:\/\/<PUBLIC_HOST>\/deploy/);
+
+  await writeMain(p, 'PUBLIC_HOST=deploy.example.com\n');
 
   // A failed check still prints it: the rows say what failed, the recipe is
   // still the next thing the operator needs.
@@ -436,7 +464,7 @@ test('add with an account: looks the repo up, uploads the key, creates the webho
   }
 });
 
-test('add with an account: a 404 or a rejected token creates nothing; a missing PUBLIC_HOST refuses before any request', async () => {
+test('add with an account: a 404 or a rejected token creates nothing; no flipd.conf refuses before any request', async () => {
   const script = {};
   const { p, f, forgeOverride } = await accountSetup(script);
   try {
@@ -454,16 +482,68 @@ test('add with an account: a 404 or a rejected token creates nothing; a missing 
     assert.match(o401.err(), /token rejected by forge\.example\.com/);
     await nothing();
     noSecrets(o401);
-    await writeMain(p);   // no PUBLIC_HOST
+    // No conf at all (the installer has not run): still refused, before any
+    // request -- there is no flipd on this box yet.
+    await fs.rm(p.mainConf);
     f.seen.length = 0;
-    const oHost = io();
-    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...oHost, forgeOverride }), 1);
-    assert.match(oHost.err(), /PUBLIC_HOST is not set/);
+    const oNone = io();
+    assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...oNone, forgeOverride }), 1);
+    assert.match(oNone.err(), /not found; run install\.sh first/);
     assert.equal(f.seen.length, 0, 'refused before the first request');
     await nothing();
   } finally {
     await f.close();
   }
+});
+
+test('add with an account and no PUBLIC_HOST: uploads the deploy key, touches no webhook, writes no HOOK_HOST, prints the SSH recipe', async () => {
+  const { p, f, forgeOverride } = await accountSetup({
+    'GET /repos/Team/App': [200, { id: 12, ssh_url: 'ssh://git@forge.example.com:2222/Team/App.git' }],
+    'POST /repos/Team/App/keys': [201, { id: 5 }],
+  });
+  await writeMain(p, '', { publicHost: null });
+  try {
+    const o = io();
+    assert.equal(await add(['https://forge.example.com/Team/App'], { paths: p, ...o, forgeOverride }), 0);
+    assert.deepEqual(f.seen.map((r) => `${r.method} ${r.path}`), ['GET /repos/Team/App', 'POST /repos/Team/App/keys'], 'no hook lookup, no hook creation');
+    const text = await fs.readFile(p.repoConf('app'), 'utf8');
+    assert.doesNotMatch(text, /^HOOK_HOST=/m);
+    assert.match(text, /^REPO=ssh:\/\/git@forge\.example\.com:2222\/Team\/App\.git$/m);
+    assert.match(o.out(), /deploy key added\s+flipd@\S+ \(id 5, read-only\)/);
+    assert.match(o.out(), /^  webhook\s+none \(PUBLIC_HOST not set; trigger over SSH\)$/m);
+    assert.match(o.out(), /command="\S+\/bin\/flipd trigger app --wait",restrict/);
+    assert.match(o.out(), /gh secret set FLIPD_SSH_KEY -R Team\/App </);
+    assert.ok(!o.out().includes('gh api'), 'no webhook recipe on a box with no HTTP door');
+    noSecrets(o);
+  } finally {
+    await f.close();
+  }
+});
+
+test('add without an account: the SSH recipe when the conf loads without PUBLIC_HOST, the placeholder on ENOENT, a refusal on a malformed conf', async () => {
+  const p = await makePrefix();
+  // Loads, no PUBLIC_HOST: no HTTP door, so step 2 is the SSH recipe.
+  await writeMain(p, '', { publicHost: null });
+  let o = io();
+  assert.equal(await add(['git@github.com:o/r.git', '--build', 'true', '--deploy', 'true'], { paths: p, ...o }), 0);
+  assert.match(o.out(), /^2\. trigger this repo over SSH/m);
+  assert.match(o.out(), /command="\S+\/bin\/flipd trigger r --wait",restrict/);
+  assert.match(o.out(), /gh secret set FLIPD_SSH_KEY -R o\/r </);
+  assert.ok(!o.out().includes('Payload URL'), 'no webhook recipe');
+  assert.doesNotMatch(await fs.readFile(p.repoConf('r'), 'utf8'), /^HOOK_HOST=/m);
+  // ENOENT: the installer has not run; the webhook recipe with its placeholder, as before.
+  await fs.rm(p.mainConf);
+  o = io();
+  assert.equal(await add(['git@github.com:o/r2.git', '--build', 'true', '--deploy', 'true'], { paths: p, ...o }), 0);
+  assert.match(o.out(), /Payload URL\s+https:\/\/<PUBLIC_HOST>\/deploy/);
+  assert.ok(!o.out().includes('trigger this repo over SSH'));
+  // Malformed: refused by name and message, never read as "no PUBLIC_HOST".
+  await fs.writeFile(p.mainConf, 'PUBLIC_HOST=deploy.example.com\nLISTEN=127.0.0.1:0\n');   // host set, no secret
+  o = io();
+  assert.equal(await add(['git@github.com:o/r3.git', '--build', 'true', '--deploy', 'true'], { paths: p, ...o }), 1);
+  assert.match(o.err(), /WEBHOOK_SECRET is required/);
+  assert.ok(!o.out().includes('trigger this repo over SSH'));
+  await assert.rejects(fs.stat(p.repoConf('r3')), 'nothing written');
 });
 
 test('add with an account: a failed webhook call deletes the uploaded key and the generated pair, so a retry is clean', async () => {
@@ -674,7 +754,7 @@ test('add with an account: the ssh-keyscan command for a differing SSH host carr
 
 test('add with an account: a malformed flipd.conf is reported by name and message, not the install.sh placeholder', async () => {
   const p = await makePrefix();
-  await fs.writeFile(p.mainConf, 'LISTEN=127.0.0.1:0\n');   // no WEBHOOK_SECRET: parseMain refuses to load it
+  await fs.writeFile(p.mainConf, 'PUBLIC_HOST=deploy.example.com\nLISTEN=127.0.0.1:0\n');   // PUBLIC_HOST set, no WEBHOOK_SECRET: parseMain refuses to load it
   await writeAccountConf(p, 'forge.example.com', { KIND: 'forgejo', TOKEN: 'tokVALUE' });
   const f = await fakeForge({});
   const forgeOverride = (c) => createForge({ ...c, api: f.api });
@@ -693,7 +773,7 @@ test('add with an account: a malformed flipd.conf is reported by name and messag
   }
 });
 
-test('add with an account: no flipd.conf at all still reports PUBLIC_HOST is not set, the installer-not-run-yet case', async () => {
+test('add with an account: no flipd.conf at all still refuses, pointing at install.sh, the installer-not-run-yet case', async () => {
   const p = await makePrefix();
   await writeAccountConf(p, 'forge.example.com', { KIND: 'forgejo', TOKEN: 'tokVALUE' });
   const f = await fakeForge({});
@@ -701,8 +781,7 @@ test('add with an account: no flipd.conf at all still reports PUBLIC_HOST is not
   try {
     const o = io();
     assert.equal(await add(['https://forge.example.com/team/app'], { paths: p, ...o, forgeOverride }), 1);
-    assert.match(o.err(), /PUBLIC_HOST is not set/);
-    assert.match(o.err(), /install\.sh/);
+    assert.match(o.err(), /not found; run install\.sh first/);
     assert.equal(f.seen.length, 0, 'refused before any forge request');
     noSecrets(o);
   } finally {
