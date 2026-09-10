@@ -18,18 +18,18 @@ the never-print rule and the zero-dependency rule bind every file here.
 | File | Contract |
 |---|---|
 | `run.mjs` | `runEntry(ctx, entry)` — one attempt, start to finish. Also `runOnFailure`, prune, and the rollback target rule. |
-| `serve.mjs` | `serve({paths, journal})` starts the service; `reconcile()` fixes state left by a crash; `findRepoFor()` matches a push. The hook server exists only with `PUBLIC_HOST`; `trigger` is the socket-side twin of `onPush`. |
-| `hook.mjs` | `createHookServer(...)`, `verifySignature(...)`, `cleanForLog(value, max)`. |
+| `serve.mjs` | `serve({paths, journal})` starts the service; `reconcile()` fixes state left by a crash; `findReposFor()` matches a push — **every** conf on that repository and branch, which is how a monorepo deploys more than one project. The hook server exists only with `PUBLIC_HOST`; `trigger` is the socket-side twin of `onPush`. |
+| `hook.mjs` | `createHookServer(...)`, `verifySignature(...)`, `cleanForLog(value, max)`. `onPush` is handed the whole list of matched confs and answers once for all of them. |
 | `queue.mjs` | `createQueue(runner, {onError})` — serialises work, survives a throwing runner. Every accepted entry carries `settled`, a promise that always resolves (`completed`/`crashed`/`stopping`); `enqueue()` returns `covered`, the promise of whatever unit covers the request — the entry, the duplicate it collapsed into, or the rerun owed after the current run. `trigger --wait` follows it. |
 | `state.mjs` | `readState`/`writeState` per repo, `StateError`, `emptyState`. Writes via a uniquely-named temp file then rename. |
 | `config.mjs` | Parses both config files. `MAIN_KEYS`/`REPO_KEYS` gate what is accepted; an unknown key is an error. |
-| `repourl.mjs` | `parseRepoUrl(url)` → `{host, owner, repo, name}` or null; `repoIdentity(url)` — the host/owner/repo string `findRepoFor` matches on. |
+| `repourl.mjs` | `parseRepoUrl(url)` → `{host, owner, repo, name}` or null; `repoIdentity(url)` — the host/owner/repo string `findReposFor` matches on; `sameRepo(a, b)` — do two URLs name one repository, by identity or, unparsed, as lowercased strings. |
 | `forge.mjs` | `createForge({kind, api, token})` — five calls against GitHub or the Gitea family over global `fetch`; `ForgeError`. Used by `cli/add.mjs` only. |
 | `paths.mjs` | Every path derives from here. `checkName()` is the only guard against `../` in a repo name — never build a repo path by hand. |
 | `git.mjs` | Thin wrappers. `gitOk` throws `GitError`; `redactUserinfo` strips credentials from messages. |
 | `exec.mjs` | `runCommand` for BUILD/DEPLOY, `groupKiller` for SIGTERM-then-SIGKILL of the whole process group. |
 | `log.mjs` | Attempt logs and `events.log`. `appendEvent` **writes raw** by contract — callers sanitise. |
-| `check.mjs` | The worker half of `flipd check`; the CLI half is in `cli/`. |
+| `check.mjs` | The worker half of `flipd check`; the CLI half is in `cli/`. The `shares` and `stale` rows need the other confs, so `serve.mjs` passes them in as `others`. |
 | `glob.mjs`, `owner.mjs` | WATCH/IGNORE matching; chown to the `flipd` user. |
 
 ## Things that look wrong and are not
@@ -39,6 +39,15 @@ the never-print rule and the zero-dependency rule bind every file here.
   open. Callers clean their own values. Adding sanitising inside it would double-
   mask attempt text that is already scrubbed.
 - **A corrupt `state.json` refuses rather than resetting.** See the root file.
+- **The rename-by-id match is a fallback, never a second match beside the
+  direct one.** `github_id` is written once and never overwritten (`run.mjs`),
+  so a conf repointed from repository A to B keeps A's id for good; matching by
+  id whenever a URL match already exists would build B on every push to A,
+  permanently. The price is that a monorepo renamed on its forge with `REPO`
+  updated in one conf and not the other matches only the updated one, and
+  `check`'s `stale` row exists to name the one left behind — nothing else can,
+  because `ls-remote` follows the forge's redirect and that conf's own check
+  passes.
 - **The webhook answers `200` for things that are not successes** (`ignored`,
   a refused pending push). GitHub records a 500 as a failed delivery and will not
   retry it, so a 500 loses the push. Only signature failures get 401. The one

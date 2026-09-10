@@ -33,6 +33,19 @@ It is the webhook without a payload. Everything the webhook does, it does:
   `coalesced` in the attempt log and `events.log`.
 - **`ON_FAILURE` fires** the same way.
 
+**One trigger is one repo file.** It is given a name, not a repository, so a
+monorepo deploying several projects ([Several projects in one
+repository](adding-a-repo.md#several-projects-in-one-repository)) needs one
+trigger each — which is one forced command, not one key each:
+
+    command="/opt/flipd/bin/flipd trigger www --wait && /opt/flipd/bin/flipd trigger console --wait",restrict ssh-ed25519 AAAA...
+
+They run in the order written, one after another, and the job goes red if
+either fails. `WATCH` still decides which of them actually builds: the filter
+is a diff against each project's live release, not a reading of a payload, so
+this is the same decision the webhook door makes. The webhook door, given a
+push, does the fan-out itself.
+
 What it lacks is the push payload. It always builds the conf's `BRANCH`. The
 workflow's `on: push: branches:` is the branch filter; a job triggered from a
 branch the conf does not name deploys the conf's branch, not the pusher's.

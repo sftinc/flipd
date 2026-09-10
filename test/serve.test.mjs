@@ -6,7 +6,7 @@ import { createHmac } from 'node:crypto';
 import net from 'node:net';
 import { makePrefix, makeSourceRepo, writeMain, writeRepoConf } from './helpers.mjs';
 import { readState, writeState, emptyState } from '../lib/state.mjs';
-import { serve, reconcile, findRepoFor } from '../lib/serve.mjs';
+import { serve, reconcile, findReposFor } from '../lib/serve.mjs';
 import { sendCommand } from '../lib/socket.mjs';
 
 function getFreePort() {
@@ -328,7 +328,7 @@ test('reconcile leaves the release current still points to, even with no state.j
   await fs.stat(path.join(dir, 'releases', 'live-one'));
 });
 
-test('findRepoFor: a corrupt state.json for one repo does not break rename-matching for others', async () => {
+test('findReposFor: a corrupt state.json for one repo does not break rename-matching for others', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'corrupt', { REPO: 'git@github.com:o/corrupt.git', BUILD: 'true', DEPLOY: 'true' });
   await writeRepoConf(p, 'ok', { REPO: 'git@github.com:o/ok.git', BUILD: 'true', DEPLOY: 'true' });
@@ -336,41 +336,41 @@ test('findRepoFor: a corrupt state.json for one repo does not break rename-match
   await fs.writeFile(path.join(p.repoDir('corrupt'), 'state.json'), 'not json');
   await writeState(p.repoDir('ok'), { ...emptyState(), github_id: 999 });
   const lines = [];
-  const find = findRepoFor(p, (l) => lines.push(l));
-  const repo = await find({ sshUrl: 'git@github.com:o/renamed.git', branch: 'main', id: 999 });
-  assert.equal(repo?.name, 'ok');
+  const find = findReposFor(p, (l) => lines.push(l));
+  const matched = await find({ sshUrl: 'git@github.com:o/renamed.git', branch: 'main', id: 999 });
+  assert.deepEqual(matched.map((r) => r.name), ['ok']);
   assert.ok(lines.some((l) => /\[corrupt\].*could not read state/.test(l)));
 });
 
-test('findRepoFor: REPO matches ssh_url case-insensitively, so a lowercase conf still receives a push', async () => {
+test('findReposFor: REPO matches ssh_url case-insensitively, so a lowercase conf still receives a push', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'app', { REPO: 'git@github.com:myorg/myapp.git', BUILD: 'true', DEPLOY: 'true' });
-  const find = findRepoFor(p, () => {});
+  const find = findReposFor(p, () => {});
+  const names = async (sshUrl) => (await find({ sshUrl, branch: 'main', id: null })).map((r) => r.name);
   // GitHub renders ssh_url in the repository's canonical case. ls-remote is
   // case-insensitive, so `check` passes; without this the push never matched
   // and github_id was never recorded, because no webhook run ever happened.
-  const repo = await find({ sshUrl: 'git@github.com:MyOrg/MyApp.git', branch: 'main', id: null });
-  assert.equal(repo?.name, 'app');
-  assert.equal(await find({ sshUrl: 'git@github.com:MyOrg/Other.git', branch: 'main', id: null }), null, 'case is the only thing forgiven');
+  assert.deepEqual(await names('git@github.com:MyOrg/MyApp.git'), ['app']);
+  assert.deepEqual(await names('git@github.com:MyOrg/Other.git'), [], 'case is the only thing forgiven');
 });
 
-test('findRepoFor: REPO and ssh_url match by identity — case, scp vs ssh:// with a port, .git and a trailing slash are all forgiven', async () => {
+test('findReposFor: REPO and ssh_url match by identity — case, scp vs ssh:// with a port, .git and a trailing slash are all forgiven', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'scp', { REPO: 'git@forge.example.com:Team/App.git', BUILD: 'true', DEPLOY: 'true' });
   await writeRepoConf(p, 'plain', { REPO: 'file:///srv/git/other', BUILD: 'true', DEPLOY: 'true' });
-  const find = findRepoFor(p, () => {});
-  const q = (sshUrl) => find({ sshUrl, branch: 'main', id: null });
+  const find = findReposFor(p, () => {});
+  const q = async (sshUrl) => (await find({ sshUrl, branch: 'main', id: null })).map((r) => r.name);
   // Forgejo renders ssh_url as ssh://git@host:port/... when SSH is not on 22;
   // the operator wrote the scp form. Same repository.
-  assert.equal((await q('ssh://git@forge.example.com:2222/team/app'))?.name, 'scp');
-  assert.equal((await q('GIT@FORGE.EXAMPLE.COM:team/app.git/'))?.name, 'scp');
-  assert.equal(await q('git@other.example.com:team/app.git'), null, 'a different host is a different repository');
-  assert.equal(await q('git@forge.example.com:team/app2.git'), null, 'a different repo is a different repository');
-  assert.equal((await q('file:///srv/git/OTHER'))?.name, 'plain', 'an unparsed URL still matches by lowercased string');
-  assert.equal(await q('file:///srv/git/other2'), null);
+  assert.deepEqual(await q('ssh://git@forge.example.com:2222/team/app'), ['scp']);
+  assert.deepEqual(await q('GIT@FORGE.EXAMPLE.COM:team/app.git/'), ['scp']);
+  assert.deepEqual(await q('git@other.example.com:team/app.git'), [], 'a different host is a different repository');
+  assert.deepEqual(await q('git@forge.example.com:team/app2.git'), [], 'a different repo is a different repository');
+  assert.deepEqual(await q('file:///srv/git/OTHER'), ['plain'], 'an unparsed URL still matches by lowercased string');
+  assert.deepEqual(await q('file:///srv/git/other2'), []);
 });
 
-test('findRepoFor: the id fallback is scoped to the host, so equal ids on two forges cannot cross-match', async () => {
+test('findReposFor: the id fallback is scoped to the host, so equal ids on two forges cannot cross-match', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'gh', { REPO: 'git@github.com:o/app.git', BUILD: 'true', DEPLOY: 'true' });
   await writeRepoConf(p, 'fj', { REPO: 'git@forge.example.com:o/app.git', BUILD: 'true', DEPLOY: 'true' });
@@ -378,10 +378,11 @@ test('findRepoFor: the id fallback is scoped to the host, so equal ids on two fo
   // forge's id is ordinary, not a corner case.
   await writeState(p.repoDir('gh'), { ...emptyState(), github_id: 12 });
   await writeState(p.repoDir('fj'), { ...emptyState(), github_id: 12 });
-  const find = findRepoFor(p, () => {});
-  assert.equal((await find({ sshUrl: 'git@forge.example.com:o/renamed.git', branch: 'main', id: 12 }))?.name, 'fj');
-  assert.equal((await find({ sshUrl: 'git@github.com:o/renamed.git', branch: 'main', id: 12 }))?.name, 'gh');
-  assert.equal(await find({ sshUrl: 'git@third.example.com:o/renamed.git', branch: 'main', id: 12 }), null, 'same id, unknown host: no match');
+  const find = findReposFor(p, () => {});
+  const q = async (sshUrl) => (await find({ sshUrl, branch: 'main', id: 12 })).map((r) => r.name);
+  assert.deepEqual(await q('git@forge.example.com:o/renamed.git'), ['fj']);
+  assert.deepEqual(await q('git@github.com:o/renamed.git'), ['gh']);
+  assert.deepEqual(await q('git@third.example.com:o/renamed.git'), [], 'same id, unknown host: no match');
 });
 
 test('shutdown journals a queued-but-not-yet-started entry that gets dropped', async () => {
@@ -867,6 +868,200 @@ test('trigger --wait against a repo already building follows the coalesced rerun
     assert.deepEqual(await waiting, { ok: true, outcome: 'skipped' }, 'the rerun sees the same head the in-flight build is about to make live, so it has nothing to do');
     const s = await readState(p.repoDir('r'));
     assert.equal(s.last.trigger, 'coalesced', 'confirms the reply was answered for the rerun entry, not the build already running');
+  } finally {
+    await svc.close();
+  }
+});
+
+// --- monorepo fan-out: every conf on the pushed repository and branch gets the push ---
+
+function signed(body) {
+  return { method: 'POST', body, headers: { 'x-hub-signature-256': 'sha256=' + createHmac('sha256', 'testsecret').update(body).digest('hex'), 'x-github-event': 'push' } };
+}
+
+test('findReposFor: every conf on the same repository and branch matches one push, so a monorepo deploys more than one project', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'www', { REPO: 'git@github.com:o/mono.git', ROOT: 'www', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: 'GIT@GitHub.com:O/Mono', ROOT: 'console', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'other', { REPO: 'git@github.com:o/other.git', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'staging', { REPO: 'git@github.com:o/mono.git', BRANCH: 'staging', BUILD: 'true', DEPLOY: 'true' });
+  const find = findReposFor(p, () => {});
+  const names = async (q) => (await find(q)).map((r) => r.name);
+  assert.deepEqual(await names({ sshUrl: 'git@github.com:o/mono.git', branch: 'main', id: null }), ['console', 'www'], 'both projects, in conf-name order, and nothing else');
+  assert.deepEqual(await names({ sshUrl: 'git@github.com:o/mono.git', branch: 'staging', id: null }), ['staging']);
+  assert.deepEqual(await names({ sshUrl: 'git@github.com:o/nope.git', branch: 'main', id: null }), [], 'no match is an empty list');
+});
+
+test('findReposFor: a renamed monorepo matches every conf that recorded its id, and tells each one', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'www', { REPO: 'git@github.com:o/mono.git', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: 'git@github.com:o/mono.git', BUILD: 'true', DEPLOY: 'true' });
+  await writeState(p.repoDir('www'), { ...emptyState(), github_id: 55 });
+  await writeState(p.repoDir('console'), { ...emptyState(), github_id: 55 });
+  const lines = [];
+  const find = findReposFor(p, (l) => lines.push(l));
+  const matched = await find({ sshUrl: 'git@github.com:o/renamed.git', branch: 'main', id: 55 });
+  assert.deepEqual(matched.map((r) => r.name), ['console', 'www']);
+  assert.equal(lines.filter((l) => /renamed: now git@github\.com:o\/renamed\.git/.test(l)).length, 2, 'each stale conf is told to update REPO');
+});
+
+test('a push to a monorepo queues every project on it, and each project applies its own WATCH', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ 'www/index.html': 'w', 'console/index.html': 'c', 'packages/shared/lib.mjs': 's' });
+  await writeRepoConf(p, 'www', { REPO: src.url, ROOT: 'www', WATCH: 'www/** packages/shared/**', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: src.url, ROOT: 'console', WATCH: 'console/** packages/shared/**', BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const push = async () => {
+      const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, signed(JSON.stringify({ ref: 'refs/heads/main', after: 'b'.repeat(40), pusher: { name: 'w' }, repository: { ssh_url: src.url } })));
+      const text = await res.text();
+      await waitIdle(p);
+      return { status: res.status, text };
+    };
+    const live = async (name) => (await readState(p.repoDir(name))).live;
+
+    // First push: nothing is live yet, so the filter does not run and both build.
+    const first = await push();
+    assert.equal(first.status, 202);
+    assert.equal(first.text, 'queued console; queued www', 'one reply names every project it queued, in conf-name order');
+    const www1 = await live('www');
+    const console1 = await live('console');
+    assert.ok(www1 && console1, 'both projects are live');
+
+    // A change under www/ only: www builds, console is skipped by its own WATCH.
+    await src.commit({ 'www/index.html': 'w2' });
+    await push();
+    assert.notEqual(await live('www'), www1, 'www rebuilt');
+    assert.equal(await live('console'), console1, 'console did not');
+    assert.match(await fs.readFile(path.join(p.repoLog('console'), 'events.log'), 'utf8'), /skipped/);
+
+    // A shared-library change: both build.
+    const www2 = await live('www');
+    await src.commit({ 'packages/shared/lib.mjs': 's2' });
+    await push();
+    assert.notEqual(await live('www'), www2);
+    assert.notEqual(await live('console'), console1);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('a project blocked by a pending flip does not stop its sibling in the same repository', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'www', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await writeState(p.repoDir('www'), { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha: 'x' }, b: { sha: 'y' } } });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, signed(JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: src.url } })));
+    assert.equal(res.status, 202, 'something was queued, so the delivery is accepted');
+    assert.equal(await res.text(), 'queued console; refused www: pending b');
+    await waitIdle(p);
+    assert.ok((await readState(p.repoDir('console'))).live, 'console built');
+    assert.equal((await readState(p.repoDir('www'))).pending, 'b', 'www is exactly as it was');
+    assert.ok(lines.some((l) => l === '[www] refused a push: pending b; run flipd rollback www or flipd run www'), `the refusal is in journald: ${lines}`);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('a monorepo push refused for every project answers 200, like a single refused push', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'www', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await writeState(p.repoDir('www'), { ...emptyState(), live: 'a', pending: 'b', releases: { a: { sha: 'x' }, b: { sha: 'y' } } });
+  await fs.mkdir(p.repoDir('console'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('console'), 'state.json'), 'not json');
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, signed(JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: src.url } })));
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), 'refused console: state.json is unreadable; refused www: pending b');
+    assert.deepEqual((await sendCommand(p.sock, { cmd: 'status' })).queued, []);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('a monorepo push during shutdown answers 503: a discarded sibling outranks a queued one', async () => {
+  // Same window as the single-repo shutdown test above: close() has run
+  // queue.stop() before it returns, and the listener is still up.
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r1', { REPO: src.url, BUILD: 'trap "" TERM; sleep 5', DEPLOY: 'true' });
+  await writeRepoConf(p, 'www', { REPO: 'git@github.com:o/mono.git', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: 'git@github.com:o/mono.git', BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r1' }), { ok: true, queued: true });
+  await waitFor(async () => (await sendCommand(p.sock, { cmd: 'status' })).running === 'r1');
+  const closing = svc.close();
+  try {
+    const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, signed(JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/mono.git' } })));
+    assert.equal(res.status, 503);
+    assert.equal(await res.text(), 'refused console (stopping); refused www (stopping)');
+  } finally {
+    await closing;
+  }
+});
+
+test('check names the other confs that share this repository and branch, and the one webhook that covers them', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'www', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'staging', { REPO: src.url, BRANCH: 'staging', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'other', { REPO: 'git@github.com:o/other.git', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.repoDir('www'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('www'), 'key'), 'not-a-real-key');
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const r = await sendCommand(p.sock, { cmd: 'check', name: 'www', setRemote: false }, { timeoutMs: 30000 });
+    assert.equal(r.ok, true);
+    const shares = r.rows.find(([k]) => k === 'shares');
+    assert.ok(shares, `a shares row: ${JSON.stringify(r.rows)}`);
+    assert.match(shares[1], /\bconsole\b/);
+    assert.doesNotMatch(shares[1], /\b(staging|other)\b/, 'a different branch or repository is not a sibling');
+    assert.match(shares[1], /one webhook/i, 'the row says the one webhook covers them');
+  } finally {
+    await svc.close();
+  }
+});
+
+test('check flags a conf that recorded this repository\'s forge id under a different REPO: a rename updated in one conf and not the other', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'www', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'console', { REPO: 'file:///srv/git/old-name', BUILD: 'true', DEPLOY: 'true' });
+  await writeRepoConf(p, 'other', { REPO: 'file:///srv/git/other', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.repoDir('www'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('www'), 'key'), 'not-a-real-key');
+  await writeState(p.repoDir('www'), { ...emptyState(), github_id: 55 });
+  await writeState(p.repoDir('console'), { ...emptyState(), github_id: 55 });
+  await writeState(p.repoDir('other'), { ...emptyState(), github_id: 56 });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const r = await sendCommand(p.sock, { cmd: 'check', name: 'www', setRemote: false }, { timeoutMs: 30000 });
+    assert.equal(r.ok, true);
+    const stale = r.rows.find(([k]) => k === 'stale');
+    assert.ok(stale, `a stale row: ${JSON.stringify(r.rows)}`);
+    assert.match(stale[1], /\bconsole\b/);
+    assert.doesNotMatch(stale[1], /\bother\b/);
+    assert.match(stale[1], /REPO/, 'the row says what to update');
   } finally {
     await svc.close();
   }

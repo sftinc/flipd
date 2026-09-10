@@ -9,7 +9,7 @@ import add from '../lib/cli/add.mjs';
 import check from '../lib/cli/check.mjs';
 import env from '../lib/cli/env.mjs';
 import remove from '../lib/cli/remove.mjs';
-import { findRepoFor } from '../lib/serve.mjs';
+import { findReposFor } from '../lib/serve.mjs';
 import { parseRepoUrl } from '../lib/repourl.mjs';
 import { createForge } from '../lib/forge.mjs';
 
@@ -73,10 +73,10 @@ test('add given the https form writes the ssh REPO a push can actually match', a
   // pattern: the webhook matcher finds this repo for a push to it. The rewrite
   // to the scp form is for fetch (the deploy key works over SSH), not for
   // matching — since identity matching landed, the https form matches too.
-  const find = findRepoFor(p, () => {});
-  const matched = await find({ sshUrl: 'git@github.com:sftinc/Alias.Route.git', branch: 'main', id: null });
-  assert.equal(matched?.name, 'alias.route', 'a push to this repository matches the config add just wrote');
-  assert.equal((await find({ sshUrl: 'https://github.com/sftinc/Alias.Route', branch: 'main', id: null }))?.name, 'alias.route', 'same repository, different spelling');
+  const find = findReposFor(p, () => {});
+  const names = async (sshUrl) => (await find({ sshUrl, branch: 'main', id: null })).map((r) => r.name);
+  assert.deepEqual(await names('git@github.com:sftinc/Alias.Route.git'), ['alias.route'], 'a push to this repository matches the config add just wrote');
+  assert.deepEqual(await names('https://github.com/sftinc/Alias.Route'), ['alias.route'], 'same repository, different spelling');
 });
 
 test('add --key writes KEY, generates nothing, and prints the collaborator instruction', async () => {

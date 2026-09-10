@@ -44,7 +44,7 @@ const repos = [{ name: 'r', repo: 'git@github.com:o/r.git', branch: 'main' }];
 test('routes: 404 elsewhere, 401 unsigned, ping, push match, push no match, bad json', async () => {
   const pushes = [];
   const lines = [];
-  const h = await listen({ secret: 's', findRepo: async ({ sshUrl, branch }) => repos.find((r) => r.repo === sshUrl && r.branch === branch) ?? null, onPush: async (repo, info) => { pushes.push([repo.name, info]); return { status: 202, body: `queued ${repo.name}` }; }, journal: (l) => lines.push(l) });
+  const h = await listen({ secret: 's', findRepos: async ({ sshUrl, branch }) => repos.filter((r) => r.repo === sshUrl && r.branch === branch), onPush: async (matched, info) => { for (const r of matched) pushes.push([r.name, info]); return { status: 202, body: matched.map((r) => `queued ${r.name}`).join('; ') }; }, journal: (l) => lines.push(l) });
   try {
     assert.equal((await fetch(`http://127.0.0.1:${h.port}/other`)).status, 404);
     assert.equal((await fetch(`http://127.0.0.1:${h.port}/deploy`)).status, 404);
@@ -106,7 +106,7 @@ test('routes: 404 elsewhere, 401 unsigned, ping, push match, push no match, bad 
 
 test('the delivery id reaches onPush raw, and is empty when the header is absent', async () => {
   const seen = [];
-  const h = await listen({ secret: 's', findRepo: async () => repos[0], onPush: async (repo, info) => { seen.push(info.delivery); return { status: 202, body: 'queued r' }; }, journal: () => {} });
+  const h = await listen({ secret: 's', findRepos: async () => [repos[0]], onPush: async (matched, info) => { seen.push(info.delivery); return { status: 202, body: 'queued r' }; }, journal: () => {} });
   try {
     const push = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/r.git' } });
     const headers = (extra) => ({ 'x-hub-signature-256': h.sign('s', push), 'x-github-event': 'push', ...extra });
@@ -126,7 +126,7 @@ test('the delivery id is on every ignored-push journal line, cleaned and bounded
   // the journal is the only trail. The 401 arm is deliberately not here:
   // nothing from an unverified request is journaled beyond what already is.
   const lines = [];
-  const h = await listen({ secret: 's', findRepo: async () => null, onPush: async () => ({ status: 202, body: '' }), journal: (l) => lines.push(l) });
+  const h = await listen({ secret: 's', findRepos: async () => [], onPush: async () => ({ status: 202, body: '' }), journal: (l) => lines.push(l) });
   try {
     const id = '72d3162e-cc78-11e3-81ab-4c9367dc0958';
     const post = (payload, delivery) => h.post(payload, { 'x-hub-signature-256': h.sign('s', payload), 'x-github-event': 'push', 'x-github-delivery': delivery });
@@ -148,7 +148,7 @@ test('the delivery id is on every ignored-push journal line, cleaned and bounded
 });
 
 test('bodies over 26 MiB get 413 before signature checking, declared or chunked; 25 MiB is accepted', async () => {
-  const h = await listen({ secret: 's', findRepo: async () => null, onPush: async () => ({ status: 202, body: '' }), journal: () => {} });
+  const h = await listen({ secret: 's', findRepos: async () => [], onPush: async () => ({ status: 202, body: '' }), journal: () => {} });
   try {
     const r = await h.post(Buffer.alloc(26 * 1024 * 1024 + 1, 0x20));
     assert.equal(r.status, 413);
@@ -166,7 +166,7 @@ test('bodies over 26 MiB get 413 before signature checking, declared or chunked;
 
 test('a throwing onPush is a 500, and the server survives it', async () => {
   const lines = [];
-  const h = await listen({ secret: 's', findRepo: async ({ sshUrl, branch }) => repos.find((r) => r.repo === sshUrl && r.branch === branch) ?? null, onPush: async () => { throw new Error('kaboom'); }, journal: (l) => lines.push(l) });
+  const h = await listen({ secret: 's', findRepos: async ({ sshUrl, branch }) => repos.filter((r) => r.repo === sshUrl && r.branch === branch), onPush: async () => { throw new Error('kaboom'); }, journal: (l) => lines.push(l) });
   try {
     const push = JSON.stringify({ ref: 'refs/heads/main', repository: { ssh_url: 'git@github.com:o/r.git' } });
     const r = await h.post(push, { 'x-hub-signature-256': h.sign('s', push), 'x-github-event': 'push' });
@@ -185,8 +185,8 @@ test('a Forgejo delivery is accepted: GitHub compatibility headers, a push paylo
   const forgeRepos = [{ name: 'f', repo: 'ssh://git@forge.example.com:2222/team/app.git', branch: 'main' }];
   const h = await listen({
     secret: 's',
-    findRepo: async ({ sshUrl, branch }) => forgeRepos.find((r) => r.repo === sshUrl && r.branch === branch) ?? null,
-    onPush: async (repo, info) => { pushes.push([repo.name, info]); return { status: 202, body: `queued ${repo.name}` }; },
+    findRepos: async ({ sshUrl, branch }) => forgeRepos.filter((r) => r.repo === sshUrl && r.branch === branch),
+    onPush: async (matched, info) => { for (const r of matched) pushes.push([r.name, info]); return { status: 202, body: matched.map((r) => `queued ${r.name}`).join('; ') }; },
     journal: (l) => lines.push(l),
   });
   try {
