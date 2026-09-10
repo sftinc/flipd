@@ -48,3 +48,14 @@ Assert the *property*, not the implementation. Two examples worth copying:
 Run it against the unfixed code and watch it fail. Several assertions in this
 suite's history passed against broken implementations, and one asserted something
 that could never be true. A test that has never failed has proved nothing.
+
+## Reporting a run
+
+A block of test output presented as a paste must be a paste. Redirect the run to
+a file and quote from that file; never retype output from memory, and never
+reconstruct a failure you saw earlier — a reconstructed GREEN block and a
+hand-typed stack frame both reached a report during the SSH-trigger work, and
+both were wrong in ways that took a reviewer re-running the suite to catch. The
+code was fine each time, which is the point: the reader of a report cannot tell
+a remembered pass from a real one, so a reviewer who trusts it stops re-running
+anything. If the output is gone, run it again — it takes 26 seconds.
