@@ -15,17 +15,32 @@ upstream of flipd.
 
 ## Install
 
+There are two installs, and the difference is only whether pushes reach the box
+over HTTP. Everything else — the user, the trees, the service, the commands —
+is the same.
+
+**With a webhook.** Needs a hostname that already points at the box:
+
     git clone git@github.com:sftinc/flipd.git /opt/flipd
     sudo /opt/flipd/install.sh --host deploy.example.com
 
-`--host` needs a name that already points at the box; it installs Caddy, wires
-TLS, checks the path with a signed ping, and sets `PUBLIC_HOST`, which is what
-turns the webhook listener on. Without it, everything else happens, the Caddy
-block is printed to paste by hand, and flipd runs with no HTTP listener at all
-— which is the install for a box that will be triggered over SSH instead
-([triggering-over-ssh.md](triggering-over-ssh.md)). To front it with your own
-TLS later, set `PUBLIC_HOST` in `flipd.conf` as well as pasting the block, or
-re-run with `--host`.
+`--host` installs Caddy, wires TLS, checks the path with a signed ping, and
+sets `PUBLIC_HOST` — which is what turns the webhook listener on.
+
+**Without one.** No hostname, no TLS, no open port:
+
+    git clone git@github.com:sftinc/flipd.git /opt/flipd
+    sudo /opt/flipd/install.sh
+
+Everything happens except the Caddy step, whose site block is printed for you
+to paste if you ever want it, and flipd runs with no HTTP listener at all.
+Pushes then arrive over SSH — a CI job running `flipd trigger <name> --wait`
+through a key locked to that one command, which also makes the job go red when
+a deploy fails. That is [triggering-over-ssh.md](triggering-over-ssh.md), and
+`flipd add` prints the recipe for it.
+
+To add a webhook later, re-run with `--host`; to front it with your own TLS
+instead, paste the block and set `PUBLIC_HOST` in `flipd.conf` yourself.
 
 With `--host`, the site block lives at `/etc/caddy/conf.d/flipd.caddy` and
 logs every request to this site — source IP, method, path, status, and the

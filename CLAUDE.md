@@ -110,7 +110,7 @@ same repo can ever interleave:
 **The flip is the heart of it.** `current` is a symlink swapped by `rename()` over
 a temp link, so it is atomic. A release becomes `pending` at flip time and only
 becomes `live` when `DEPLOY` exits 0. A `pending` that never confirmed blocks the
-next webhook build — the operator must `flipd rollback` or `flipd run` — because
+next build from either door — the operator must `flipd rollback` or `flipd run` — because
 silently building over an unconfirmed flip is how a broken deploy gets buried.
 
 **State** (`lib/state.mjs`) is one `state.json` per repo holding `live`,

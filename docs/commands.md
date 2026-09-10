@@ -1,22 +1,87 @@
 # Commands
 
-| Command | Sudo / group needed | Exit codes |
-|---|---|---|
-| `flipd serve` | run by systemd as `flipd` | runs until `SIGTERM`/`SIGINT` |
-| `flipd add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]` | sudo | `0` written; `1` a name/value/config problem, or, with an account, the forge refused a call (the uploaded deploy key and its local files are undone; a webhook this run already created is left in place on the forge and named in the output); `2` usage |
-| `flipd account add <host> --kind github\|forgejo\|gitea [--api URL] [--ssh-port N] < token-file` / `account list` / `account remove <host>` | sudo | `0` done; `1` bad host/kind/token, the account already exists or does not, or the host key could not be scanned; `2` usage |
-| `flipd check <name> [--set-remote]` | group (or sudo) | `0` pass, live matches branch head; `4` pass, but live is behind (nothing wrong with the setup, just not deployed yet); `5` pass, but a release is `pending` — flipped to and never confirmed — which outranks `4`; `1` a row failed (bad config, key, or clone); `2` usage; `3` service down (or unreachable — see [Permissions](#permissions)). Also prints the recipe: the webhook one (Payload URL, secret location, `gh api` pipeline) when the conf has `PUBLIC_HOST`, so it can be read again after `--host`, or the SSH trigger recipe (forced-command key, `gh secret set`) when it does not |
-| `flipd run <name> [--now]` | group (or sudo) | `0` request handled (see stdout: `queued <name>` or `not queued: <reason>` if a build for it is already running/queued/the service is shutting down); `1` the service refused it (a config error); `2` usage; `3` service down; `--now` skips `STOP` for this attempt |
-| `flipd trigger <name> [--wait]` | group (or sudo) | The webhook as a command — refused on `pending`, skipped when already live, `WATCH`/`IGNORE` honoured, no `--now`. Without `--wait`: `0` accepted (queued, or coalesced into work already accepted — stdout says which); `1` refused (`pending`, unreadable `state.json`, or no such repo) or discarded (service stopping), reason on stderr; `2` usage; `3` service down. With `--wait`, the session holds until the covering attempt settles: `0` `ok` or `skipped`; `1` refused, any other outcome, or a crash, or the service stopping; `3` the connection closed unanswered (a restart mid-wait — the build continues; see `flipd log`). Made for a forced-command SSH key: [triggering-over-ssh.md](triggering-over-ssh.md) |
-| `flipd rollback <name> [--now]` | group (or sudo) | same as `run`, printing `queued rollback of <name> to <sha>` or `not queued: <reason>` |
-| `flipd status [name]` | group (or sudo) | `0` printed (the activity column falls back to `service down` if the socket is merely unreachable); `1` no such repo / nothing configured, **or** a bare `EACCES` if you're not in the `flipd` group — see [Permissions](#permissions) |
-| `flipd log <name> [--follow]` | group (or sudo) | `0` printed (or tailing, until `--follow` is stopped); `1` no logs / read error; `2` usage |
-| `flipd env <name> build\|deploy [--set K=V] [--unset K]` | sudo | `0` saved; `1` bad key/value, unparseable file, or editor exited non-zero; `2` usage |
-| `flipd remove <name>` | sudo | `0` config removed (state, logs and env files are kept — the command prints the `rm` lines for all three); `1` no such repo, or it's running/queued; `2` usage |
+`flipd <command>` with no arguments prints this list. Exit `2` is always a
+usage error; exit `3` is always the service being down or unreachable.
 
-`env` with neither `--set` nor `--unset` opens the file in `$EDITOR`
-(default `vi`) and re-validates on save. `flipd` never prints a
-`WEBHOOK_SECRET`, a private key, or any env-file value — only key names.
+| Command | Needs | Does |
+|---|---|---|
+| `flipd serve` | systemd, as `flipd` | the service; runs until `SIGTERM`/`SIGINT` |
+| `flipd add <git-url>` | sudo | sets a repo up: deploy key, webhook, conf file |
+| `flipd account add\|list\|remove` | sudo | the forge token `add` uses |
+| `flipd check <name>` | group | verifies the setup and whether live matches the branch head |
+| `flipd run <name>` | group | builds now, ignoring `WATCH` and `IGNORE` |
+| `flipd trigger <name>` | group | builds as a push would |
+| `flipd rollback <name>` | group | back to the last confirmed release |
+| `flipd status [name]` | group | one row per repo |
+| `flipd log <name>` | group | the latest attempt log |
+| `flipd env <name> build\|deploy` | sudo | extra environment for `BUILD` or `DEPLOY` |
+| `flipd remove <name>` | sudo | deletes the conf file, keeps state and logs |
+
+"group" means your account is in the `flipd` group, or you are root. See
+[Permissions](#permissions).
+
+## Flags and exit codes
+
+**`add <git-url> [--name N] [--branch B] [--root R] [--build C] [--deploy C] [--key PATH]`**
+`0` written. `1` a name, value or config problem — or, with an account, a call
+the forge refused, in which case the uploaded deploy key and its local files are
+undone and a webhook already created this run is left in place and named in the
+output.
+
+**`account add <host> --kind github|forgejo|gitea [--api URL] [--ssh-port N] < token-file`**, `account list`, `account remove <host>`
+`0` done. `1` a bad host, kind or token, an account that already exists or does
+not, or a host key that could not be scanned.
+
+**`check <name> [--set-remote]`**
+`0` pass and live matches the branch head. `4` pass, but live is behind —
+nothing wrong, just not deployed yet. `5` pass, but a release is `pending`,
+flipped to and never confirmed; it outranks `4`. `1` a row failed: config, key
+or clone. Two rows worth knowing: `shares`, the other repo files a push to this
+repository also builds, and `stale`, a repo file holding this repository's forge
+id under a different `REPO` — a rename applied to one and not the other. It also
+reprints the setup recipe: the webhook one when the conf has `PUBLIC_HOST`
+(Payload URL, where the secret is, a `gh api` pipeline), the SSH trigger one
+when it does not.
+
+**`run <name> [--now]`** and **`rollback <name> [--now]`**
+`0` the request was handled — stdout says `queued <name>` (or
+`queued rollback of <name> to <sha>`) or `not queued: <reason>` when a build for
+it is already running or queued, or the service is shutting down. `1` the
+service refused it, which means a config error. `--now` skips `STOP` for that
+one attempt.
+
+**`trigger <name> [--wait]`**
+The webhook as a command: refused on `pending`, skipped when the branch head is
+already live, `WATCH` and `IGNORE` honoured, and no `--now` — CI never gets the
+override. Without `--wait`, `0` accepted (queued, or coalesced into work already
+accepted — stdout says which) and `1` refused (`pending`, an unreadable
+`state.json`, or no such repo) or discarded because the service is stopping.
+With `--wait` the session holds until the covering attempt settles: `0` for `ok`
+or `skipped`, `1` for a refusal, any other outcome, a crash or a shutdown, and
+`3` if the connection closed unanswered — a restart mid-wait, where the build
+carries on and `flipd log` has it. Made for a forced-command SSH key:
+[triggering-over-ssh.md](triggering-over-ssh.md).
+
+**`status [name]`**
+`0` printed; the activity column reads `service down` when the socket is merely
+unreachable. `1` no such repo, nothing configured, or a bare `EACCES` when you
+are not in the `flipd` group.
+
+**`log <name> [--follow]`**
+`0` printed, or tailing until you stop it. `1` no logs, or a read error.
+
+**`env <name> build|deploy [--set K=V] [--unset K]`**
+`0` saved. `1` a bad key or value, an unparseable file, or an editor that exited
+non-zero. With neither `--set` nor `--unset` it opens the file in `$EDITOR`
+(default `vi`) and re-validates on save.
+
+**`remove <name>`**
+`0` the conf file is gone; state, logs and env files are kept, and the command
+prints the `rm` lines for all three. `1` no such repo, or it is running or
+queued.
+
+flipd never prints a `WEBHOOK_SECRET`, a private key, or any env-file value —
+only key names.
 
 ## Permissions
 

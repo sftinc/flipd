@@ -11,8 +11,8 @@
   what `PENDING` in `flipd status` means.
 - **The exit code is all flipd believes.** Zero confirms the release: it
   becomes `live`, the old live becomes `previous`. Anything else is
-  `deploy failed`: the repo is `PENDING`, webhook-triggered runs are refused
-  until `flipd rollback <name>` or `flipd run <name>` settles it, and
+  `deploy failed`: the repo is `PENDING`, pushes and `flipd trigger` are
+  refused until `flipd rollback <name>` or `flipd run <name>` settles it, and
   `ON_FAILURE` fires. A warning printed to stderr with exit `0` is a success.
 - **Rollback runs `DEPLOY` again**, pointed at the old release, with no
   `BUILD`. So the command must work when the release it is handed is older
@@ -79,8 +79,8 @@ Its job is to let the process that is serving now finish what it is doing.
   the attempt open with it.
 - **`flipd run <name> --now` and `flipd rollback <name> --now` skip it** for
   that one attempt and say so in the log. That is the way out when a process
-  will not finish and the work is not worth waiting for. A webhook push never
-  skips it.
+  will not finish and the work is not worth waiting for. Neither a push nor a
+  `flipd trigger` ever skips it — there is no `--now` on either door.
 - It uses the deploy env file and `TIMEOUT` on its own clock, and is not
   recorded per release: the conf's current `STOP` addresses the process
   running now, and an edit applies to the next attempt. A deploy env file

@@ -2,7 +2,10 @@
 
 Every path is keyed by the repo's name, which `add` takes from the URL
 (`git@github.com:you/app.git` becomes `app`) unless `--name` says otherwise.
-For a repo named `app`:
+The name, not the repository, is the unit: several repo files may name one
+repository (a monorepo — see [Several projects in one
+repository](adding-a-repo.md#several-projects-in-one-repository)), and each
+gets its own clone, releases, state and logs below. For a repo named `app`:
 
 | Path | What |
 |---|---|

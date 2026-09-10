@@ -6,19 +6,26 @@ no npm dependencies.
 
 ## How it works
 
-A push arrives as a webhook. flipd fetches, checks out a fresh worktree, runs
-`BUILD` in it, runs `STOP` if there is one, so the process serving now can
-finish its work, and only then flips: `current` is a symlink swapped by `rename()`
-over a temp link, so it changes atomically and a build that fails never touches
-the live release. `DEPLOY` runs after the flip, and its exit code is the whole
+A push arrives, and flipd fetches, checks out a fresh worktree, runs `BUILD`
+in it, runs `STOP` if there is one, so the process serving now can finish its
+work, and only then flips: `current` is a symlink swapped by `rename()` over a
+temp link, so it changes atomically and a build that fails never touches the
+live release. `DEPLOY` runs after the flip, and its exit code is the whole
 verdict — zero confirms the release, anything else leaves it `pending` and
-blocks the next webhook build until someone looks.
+blocks the next automatic build until someone looks.
+
+There are two ways in, and they do the same thing. A **webhook** from GitHub,
+Forgejo or Gitea, which needs a public hostname and TLS; or **SSH**, where a CI
+job runs `flipd trigger <name> --wait` through a key locked to that one command
+and gets the deploy's outcome as its exit code. A box with no HTTP door uses the
+second and needs no `PUBLIC_HOST` at all
+([docs/triggering-over-ssh.md](docs/triggering-over-ssh.md)).
 
 ## What you get
 
 | Feature | What it means |
 |---|---|
-| **Any number of repos on one box** | One conf file and one webhook each, one service for all of them; one worker, so no two builds ever interleave. |
+| **Any number of repos on one box** | One conf file per thing you deploy, one webhook per repository, one service for all of them; one worker, so no two builds ever interleave. |
 | **GitHub, Forgejo and Gitea** | With an account for the host, `add` generates the deploy key, uploads it, and creates the webhook itself. |
 | **Atomic releases** | `current` is swapped by `rename()`, and a failure before the flip leaves the live release untouched. |
 | **Rollback that means it** | `flipd rollback` re-runs the `DEPLOY` recorded with that release, not whatever the conf says now. |
@@ -83,6 +90,7 @@ worth reading first so you know what it will and will not do.
     flipd check app
     flipd log app [--follow]
     flipd run app          # build now, ignoring watch/ignore filters
+    flipd trigger app --wait   # build as a webhook would, and wait for the outcome
     flipd rollback app     # back to the last confirmed release
     sudo flipd env app build --set NPM_TOKEN=...
 
@@ -99,6 +107,7 @@ noticed had failed. See [docs/operating.md](docs/operating.md).
 | `flipd account add\|list\|remove` | the forge token that lets `add` do that for you |
 | `flipd check <name>` | verify the setup, and whether live matches the branch head |
 | `flipd run <name>` | build now, ignoring `WATCH` and `IGNORE` |
+| `flipd trigger <name>` | build as a webhook would; `--wait` exits with the outcome |
 | `flipd rollback <name>` | back to the last confirmed release |
 | `flipd status [name]` | what is live, pending and running |
 | `flipd log <name>` | the attempt log |

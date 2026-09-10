@@ -19,13 +19,14 @@ Everything you do happens against a machine you have not seen. Read
 
 ## What flipd is, in one paragraph
 
-flipd runs as a service on one box. A push to a watched branch arrives as a
-webhook; flipd fetches, checks out a fresh worktree, runs `BUILD` in it, then
-flips `current` — a symlink swapped with `rename()`, so it is atomic — and runs
-`DEPLOY`. `DEPLOY`'s exit code is the whole verdict: zero confirms the release,
-anything else leaves it `pending`, which blocks the next webhook build until a
-human settles it. One conf file per repo in `/etc/flipd/repos/<name>.conf`.
-Full model: [build-and-deploy.md](build-and-deploy.md).
+flipd runs as a service on one box. A push to a watched branch reaches it
+either as a webhook (HTTPS, needs a public hostname) or over SSH, where a CI
+job runs `flipd trigger <name> --wait`; both do the same thing. flipd fetches,
+checks out a fresh worktree, runs `BUILD` in it, runs `STOP` if the repo has
+one, then flips a symlink and runs `DEPLOY`. A build that fails never touches
+the live release. `DEPLOY`'s exit code is the verdict: zero confirms it,
+anything else leaves it `pending`, which blocks the next push or trigger until
+a person settles it.
 
 ## What you can do here
 
@@ -34,11 +35,12 @@ Full model: [build-and-deploy.md](build-and-deploy.md).
 | Set flipd up on a fresh box | Install, add the repo, write `BUILD` and `DEPLOY`, verify. Two steps that cannot be undone. | [Set it up on a fresh box](#set-it-up-on-a-fresh-box) |
 | Work out a `BUILD` and a `DEPLOY` | Read their app, propose both, show them before you use them. | [Work out a `BUILD` and a `DEPLOY`](#work-out-a-build-and-a-deploy) |
 | Add a repo to a box that already runs flipd | No installer. A deploy key and a webhook, then the two commands. | [Add a repo to a box that already runs flipd](#add-a-repo-to-a-box-that-already-runs-flipd) |
+| Deploy several projects from one repository | A monorepo: one repo file per project, one webhook for the lot. | [Deploy several projects from one repository](#deploy-several-projects-from-one-repository) |
 | Trigger over SSH instead of a webhook | A box with no HTTP door: a forced-command key and `flipd trigger`, not `install.sh --host`. | [Trigger over SSH instead of a webhook](#trigger-over-ssh-instead-of-a-webhook) |
 | Change a build or deploy command | One conf file, re-read on the next event. No restart. | [Change `BUILD` or `DEPLOY`](#change-build-or-deploy) |
 | Find out whether it is working | `check`, `status`, `log`. Nothing here writes. | [Verify](#verify) |
 | Work out why a push did not deploy | Caddy's journal, the attempt log, an exit code. Also safe. | [When it goes wrong](#when-it-goes-wrong) |
-| Settle a failed deploy, or go back a release | A `pending` release refuses every webhook build until someone settles it. | [Settle a failed deploy, or roll back on purpose](#settle-a-failed-deploy-or-roll-back-on-purpose) |
+| Settle a failed deploy, or go back a release | A `pending` release refuses every push and every `flipd trigger` until someone settles it. | [Settle a failed deploy, or roll back on purpose](#settle-a-failed-deploy-or-roll-back-on-purpose) |
 | Upgrade flipd | `git pull` and restart — only while nothing is building. | [Upgrade flipd](#upgrade-flipd) |
 | Rotate a forge token | The token never reaches you, this time either. | [Rotate or remove a forge token](#rotate-or-remove-a-forge-token) |
 | Change a secret the build or deploy uses | `flipd env`, never the conf line. | [Change a secret the build or deploy uses](#change-a-secret-the-build-or-deploy-uses) |
@@ -249,6 +251,31 @@ apply: an account if this is a new forge (an existing one covers every repo on
 that host), then `flipd add`, then `BUILD` and `DEPLOY`, then verify. `flipd
 add` is still a gate — it creates a deploy key and a webhook on the forge.
 
+### Deploy several projects from one repository
+
+A monorepo — a site and an admin console in one repository, each its own
+process — is one repo file per project, all with the same `REPO`:
+
+    sudo flipd add <git-url> --name www     --root www
+    sudo flipd add <git-url> --name console --root console
+
+The second `add` is the same gate as the first, with one thing less to ask
+for: the webhook already exists on the repository and `add` reuses it. **Do
+not create a second one** — GitHub refuses a duplicate URL and Forgejo
+accepts it and then delivers every push twice.
+
+A push reaches every repo file naming that repository and that `BRANCH`.
+Give each one a `WATCH` so it only builds when its own files change:
+
+    WATCH=www/** packages/shared/**
+
+Globs match from the repository root, not from `ROOT`. They build one after
+another, never at once, and nothing switches them over together — each flips
+when its own `DEPLOY` confirms. Over SSH each project is its own trigger; the
+forced command runs both, and
+[adding-a-repo.md](adding-a-repo.md#several-projects-in-one-repository) has
+that line.
+
 ### Trigger over SSH instead of a webhook
 
 For a box with no HTTP: [triggering-over-ssh.md](triggering-over-ssh.md) is
@@ -342,7 +369,7 @@ The unit is enabled and `Restart=on-failure`, so flipd comes back on its own
 after a crash or a reboot. At startup it reconciles: an attempt that was
 in-flight is recorded as `interrupted`, release directories no state knows about
 are removed, and an unconfirmed `pending` is reported in the journal. **A
-`pending` survives a restart and still refuses webhook builds** — a reboot does
+`pending` survives a restart and still refuses pushes and triggers** — a reboot does
 not clear one, so settle it with a rollback.
 
 ### Set up monitoring
@@ -387,7 +414,7 @@ that was never created looks exactly like one that works until someone pushes.
   membership, not a dead service. See
   [commands.md](commands.md#permissions).
 - **`check` exits `5`.** A release was flipped to and `DEPLOY` never confirmed
-  it. Webhook builds are refused until it is settled with `flipd rollback` or a
+  it. Pushes and triggers are refused until it is settled with `flipd rollback` or a
   deliberate `flipd run`. Read the attempt log first.
 - **`checkout failed` on a repo with submodules.** A deploy key works for one
   repository only. A repo whose submodule is a second private repository needs
@@ -407,5 +434,6 @@ that was never created looks exactly like one that works until someone pushes.
 | [deploy-recipes.md](deploy-recipes.md) | worked `DEPLOY` commands, one per kind of thing served |
 | [commands.md](commands.md) | flags, exit codes, which need `sudo`, and the `flipd` group |
 | [operating.md](operating.md) | day to day, `check` in cron, what `pending` means |
+| [triggering-over-ssh.md](triggering-over-ssh.md) | a box with no HTTP door: the forced-command key, `flipd trigger`, CI that goes red on a failed deploy |
 | [layout.md](layout.md) | every path flipd writes, and the modes on them |
 | [serving-with-caddy.md](serving-with-caddy.md) | the site block that makes the app reachable |
