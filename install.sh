@@ -312,6 +312,40 @@ if [ -n "$HOST" ]; then
     printf '\nimport /etc/caddy/conf.d/*\n' >> /etc/caddy/Caddyfile
     say 'added "import /etc/caddy/conf.d/*" to /etc/caddy/Caddyfile'
   fi
+  # The apt package ships a host-less `:80` site serving /usr/share/caddy --
+  # the "Caddy works!" page -- and flipd's own site matches by Host, so the two
+  # coexist and every flipd box answers a bare-IP request with that page. A
+  # second `:80` in conf.d cannot shadow it: Caddy refuses the file outright
+  # with "ambiguous site definition: :80", so the packaged block itself is what
+  # has to stop answering.
+  # Recognised by the packaged root and nothing else -- an operator who put a
+  # real site on :80 keeps it. Commented rather than deleted, so the file still
+  # shows what was there; a commented line no longer matches either pattern, so
+  # a re-run is a no-op, which is what "every step is skip-if-present" means
+  # here. Written back with `cat >`, not `mv`: /etc/caddy/Caddyfile is a dpkg
+  # conffile and must keep its own mode and owner.
+  awk '
+    !inblock && /^[[:space:]]*:80[[:space:]]*\{/ { inblock = 1; depth = 0; n = 0; stock = 0 }
+    inblock {
+      line[++n] = $0
+      if ($0 ~ /^[[:space:]]*root[[:space:]]+\*[[:space:]]+\/usr\/share\/caddy[[:space:]]*$/) stock = 1
+      depth += gsub(/\{/, "{")
+      depth -= gsub(/\}/, "}")
+      if (depth <= 0) {
+        for (i = 1; i <= n; i++) print (stock ? "#" line[i] : line[i])
+        inblock = 0
+      }
+      next
+    }
+    { print }
+  ' /etc/caddy/Caddyfile > /etc/caddy/Caddyfile.flipd-new
+  if cmp -s /etc/caddy/Caddyfile /etc/caddy/Caddyfile.flipd-new; then
+    rm -f /etc/caddy/Caddyfile.flipd-new
+  else
+    cat /etc/caddy/Caddyfile.flipd-new > /etc/caddy/Caddyfile
+    rm -f /etc/caddy/Caddyfile.flipd-new
+    say 'commented out the packaged ":80" site in /etc/caddy/Caddyfile; this box no longer serves the "Caddy works!" page to anything that reaches it by address'
+  fi
   systemctl enable --now caddy >/dev/null 2>&1 || true
   systemctl reload caddy || systemctl restart caddy
   say "reloaded caddy"

@@ -280,6 +280,87 @@ test('install.sh: the Caddy site block logs every request to journald, not to a 
   assert.ok(logIndex > 0 && logIndex < handleIndex, 'log is declared inside the site, before the handlers');
 });
 
+// The packaged Caddyfile, verbatim from the caddy .deb (dpkg conffile
+// 8cbf072a3e390217a88c242a7f18ee76), trimmed of the comment preamble that
+// carries no directives. This is the thing the installer has to neutralise.
+const STOCK_CADDYFILE = `# The Caddyfile is an easy way to configure your Caddy web server.
+
+:80 {
+\t# Set this path to your site's directory.
+\troot * /usr/share/caddy
+
+\t# Enable the static file server.
+\tfile_server
+
+\t# Another common task is to set up a reverse proxy:
+\t# reverse_proxy localhost:8080
+}
+
+# Refer to the Caddy docs for more information:
+# https://caddyserver.com/docs/caddyfile
+`;
+
+// Pulls the awk program out of install.sh and runs it over `input`, the same
+// way read_secret's body is extracted and exercised above: the installer stays
+// unexecuted, only the few lines of awk it contains are.
+async function runDefaultSiteAwk(input) {
+  const text = await fs.readFile('install.sh', 'utf8');
+  // Anchor on the end -- install.sh has more than one awk program (the unit's
+  // ExecStart rewrite is the other), and the one that matters here is the one
+  // applied to the Caddyfile. Find that, then take the `awk '` nearest before.
+  const close = text.indexOf("\n  ' /etc/caddy/Caddyfile");
+  assert.ok(close >= 0, 'an awk program is applied to /etc/caddy/Caddyfile');
+  const open = text.lastIndexOf("awk '", close);
+  assert.ok(open >= 0, 'that awk program has an opening quote');
+  const program = text.slice(open + "awk '".length, close + 1);
+  const dir = await tmpdir();
+  const file = path.join(dir, 'Caddyfile');
+  await fs.writeFile(file, input);
+  const { stdout } = await run('awk', [program, file]);
+  return stdout;
+}
+
+test('install.sh: the packaged ":80" default site is commented out, and only when it is still the packaged one', async () => {
+  // The apt package serves /usr/share/caddy/index.html -- the "Caddy works!"
+  // page -- from a host-less `:80` block. flipd's own site matches by Host, so
+  // the two coexist happily and every flipd box answers a bare-IP request with
+  // that page. Caddy refuses a second `:80` ("ambiguous site definition:
+  // :80"), so conf.d cannot shadow it; the stock block itself has to go.
+  const out = await runDefaultSiteAwk(STOCK_CADDYFILE);
+  assert.doesNotMatch(out, /^[\t ]*:80[\t ]*\{/m, 'no uncommented :80 block survives');
+  assert.doesNotMatch(out, /^[\t ]*root \* \/usr\/share\/caddy/m, 'the packaged root is no longer live');
+  assert.doesNotMatch(out, /^[\t ]*file_server/m, 'the file server inside the block went with it');
+  // Commented, not deleted: an operator reading the file must be able to see
+  // what was there and why the page stopped answering.
+  assert.match(out, /^#[\t ]*:80[\t ]*\{/m, 'the block is commented out rather than removed');
+  // Everything outside the block is untouched, including any import line the
+  // installer appends -- clobbering that would unwire flipd's own site.
+  assert.match(out, /^# Refer to the Caddy docs for more information:$/m, 'trailing comments survive');
+  assert.match(out, /^# The Caddyfile is an easy way/m, 'the preamble survives');
+
+  // Idempotent, which install.sh's own first line promises of every step: the
+  // commented output must be a fixed point, or a re-run stacks a second `#` on
+  // each line and the block drifts further from what it was.
+  const twice = await runDefaultSiteAwk(out);
+  assert.equal(twice, out, 're-running over its own output changes nothing');
+});
+
+test('install.sh: a :80 site the operator actually wrote is left alone', async () => {
+  // The whole safety of this step is that it recognises the packaged block by
+  // the packaged root and nothing else. A real site on :80 -- someone serving
+  // their own files, or proxying -- must survive an install untouched.
+  const theirs = ':80 {\n\troot * /srv/www\n\tfile_server\n}\n';
+  assert.equal(await runDefaultSiteAwk(theirs), theirs, 'a :80 block with a different root is not the packaged one');
+
+  const proxy = ':80 {\n\treverse_proxy 127.0.0.1:3000\n}\n';
+  assert.equal(await runDefaultSiteAwk(proxy), proxy, 'a :80 block with no root at all is not the packaged one');
+
+  // A Caddyfile that never had a :80 block -- someone who already replaced it
+  // with their own hostname site -- passes through byte for byte.
+  const named = 'example.com {\n\troot * /usr/share/caddy\n\tfile_server\n}\n';
+  assert.equal(await runDefaultSiteAwk(named), named, 'the packaged root under a named site is not the host-less default');
+});
+
 test('install.sh: --host normalises WEBHOOK_SECRET by the effective value, delete-all then write-one; the no-host tail names PUBLIC_HOST and the SSH doc', async () => {
   const text = await fs.readFile('install.sh', 'utf8');
   const start = text.indexOf('elif [ -n "$HOST" ]; then');
