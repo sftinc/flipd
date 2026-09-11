@@ -339,13 +339,10 @@ if [ -n "$HOST" ]; then
     }
     { print }
   ' /etc/caddy/Caddyfile > /etc/caddy/Caddyfile.flipd-new
-  if cmp -s /etc/caddy/Caddyfile /etc/caddy/Caddyfile.flipd-new; then
-    rm -f /etc/caddy/Caddyfile.flipd-new
-  else
+  if ! cmp -s /etc/caddy/Caddyfile /etc/caddy/Caddyfile.flipd-new; then
     cat /etc/caddy/Caddyfile.flipd-new > /etc/caddy/Caddyfile
-    rm -f /etc/caddy/Caddyfile.flipd-new
-    say 'commented out the packaged ":80" site in /etc/caddy/Caddyfile; this box no longer serves the "Caddy works!" page to anything that reaches it by address'
   fi
+  rm -f /etc/caddy/Caddyfile.flipd-new
   systemctl enable --now caddy >/dev/null 2>&1 || true
   systemctl reload caddy || systemctl restart caddy
   say "reloaded caddy"
