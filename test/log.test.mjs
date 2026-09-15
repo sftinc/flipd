@@ -130,3 +130,15 @@ test('pruneLogs keeps the newest N and never events.log; latestLog finds the new
   assert.deepEqual((await fs.readdir(dir)).sort(), ['2026-01-01T00-00-01Z-2.log', '2026-01-01T00-00-02Z.log', 'events.log']);
   assert.deepEqual(await pruneLogs(dir, 0), []);
 });
+
+test('an id is never reused after its log is pruned (LOG_KEEP=1, three attempts in one second)', async () => {
+  const dir = await tmp();
+  const a = await openAttemptLog(dir, { now: fixed });
+  await a.close();
+  const b = await openAttemptLog(dir, { now: fixed });
+  await b.close();
+  await pruneLogs(dir, 1);   // removes a's log; b's -2 is the newest and stays
+  const c = await openAttemptLog(dir, { now: fixed });
+  await c.close();
+  assert.deepEqual([a.id, b.id, c.id], ['2026-09-05T08-14-02Z', '2026-09-05T08-14-02Z-2', '2026-09-05T08-14-02Z-3']);
+});
