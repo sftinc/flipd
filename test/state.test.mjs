@@ -60,3 +60,37 @@ test('a partial file on disk gains missing fields', async () => {
   assert.equal(s.pending, null);
   assert.equal(s.github_id, null);
 });
+
+test('a state.json that parses but has the wrong shape is a StateError, not a state', async () => {
+  // Each of these parses and spreads over the defaults. Two of them delete a
+  // release downstream: a numeric live is missed by prune's Set.has, and a null
+  // releases entry reads as unregistered to reconcile().
+  const bad = [
+    { releases: null },
+    { releases: [] },
+    { releases: { r1: null } },
+    { releases: { r1: [] } },
+    { releases: { r1: 42 } },
+    { live: 1, releases: { 1: { sha: 'x' } } },
+    { previous: {} },
+    { pending: [] },
+  ];
+  for (const value of bad) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
+    await fs.writeFile(path.join(dir, 'state.json'), JSON.stringify(value));
+    await assert.rejects(readState(dir), (e) => {
+      assert.ok(e instanceof StateError, `${JSON.stringify(value)} must be a StateError`);
+      assert.match(e.message, /state\.json/);
+      return true;
+    });
+  }
+});
+
+test('the shape check accepts a legacy partial file, any github_id, and a malformed last', async () => {
+  for (const value of [{ live: 'r1' }, { github_id: 'weird' }, { last: { attempt: 42 } }, { last: 'x' }]) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
+    await fs.writeFile(path.join(dir, 'state.json'), JSON.stringify(value));
+    const s = await readState(dir);
+    assert.deepEqual(s.releases, {});
+  }
+});

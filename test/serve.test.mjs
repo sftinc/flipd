@@ -1066,3 +1066,12 @@ test('check flags a conf that recorded this repository\'s forge id under a diffe
     await svc.close();
   }
 });
+
+test('reconcile does not delete a release directory whose state entry is null', async () => {
+  const p = await makePrefix();
+  const dir = p.repoDir('r');
+  await fs.mkdir(path.join(dir, 'releases', 'r1'), { recursive: true });
+  await fs.writeFile(path.join(dir, 'state.json'), '{"releases":{"r1":null}}');
+  await reconcile(p, () => {});
+  await fs.stat(path.join(dir, 'releases', 'r1'));
+});

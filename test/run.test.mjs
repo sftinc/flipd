@@ -951,3 +951,14 @@ test('via labels the attempt for a reader everywhere the kind used to, on the no
   assert.match(failed, /trigger=ssh/);
   assert.equal((await t.events()).match(/started \S+ ssh /g).length, 2, 'both ssh attempts are labelled in events.log');
 });
+
+test('a state.json that parses but has the wrong shape takes the unreadable path and is left byte-identical', async () => {
+  const t = await setup();
+  const stateFile = path.join(t.p.repoDir('r'), 'state.json');
+  await fs.mkdir(t.p.repoDir('r'), { recursive: true });
+  const text = '{"live":"r1","releases":null}';
+  await fs.writeFile(stateFile, text);
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'fetch failed');
+  assert.equal(await fs.readFile(stateFile, 'utf8'), text);
+  assert.match(await t.events(), /fetch-failed .*state\.json is unreadable/);
+});
