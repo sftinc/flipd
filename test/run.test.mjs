@@ -482,14 +482,14 @@ test('prune\'s worktree removal carries the shutdown signal: it is interrupted, 
   // and step 7 still prunes — with the signal already aborted.
   const ac = new AbortController();
   ac.abort();
-  t.ctx.signal = ac.signal;
+  t.ctx.signal = t.ctx.shutdown = ac.signal;
   t.ctx.main = { ...MAIN, keep: 0 };
   assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'interrupted');
   await assert.rejects(fs.stat(path.join(t.p.repoDir('r'), 'releases', doomed)), 'the directory is removed either way');
   assert.ok((await fs.readdir(admin)).includes(doomed), 'the removal was killed by the shutdown signal rather than completing');
 
   // And it is transient, not a leak: the next attempt's `worktree prune` clears it.
-  t.ctx.signal = undefined;
+  t.ctx.signal = t.ctx.shutdown = undefined;
   await runEntry(t.ctx, { kind: 'manual', name: 'r' });
   assert.ok(!(await fs.readdir(admin)).includes(doomed), 'the next attempt clears the stale admin entry');
 });
@@ -1094,4 +1094,73 @@ test('a push queued before a pause is refused when it reaches the worker; a manu
   assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'refused');
   assert.match(await t.events(), /refused paused since .*; run flipd resume r/);
   assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'ok');
+});
+
+async function waitForFile(file, ms = 20000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    try { await fs.stat(file); return; } catch { await new Promise((r) => setTimeout(r, 50)); }
+  }
+  throw new Error(`timed out waiting for ${file}`);
+}
+
+test('cancel mid-BUILD is cancelled, with live and current untouched and no pending', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const live = (await t.state()).live;
+  const marker = path.join(t.p.repoDir('r'), 'building');
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: `touch ${marker}; sleep 30`, DEPLOY: 'true', ON_FAILURE: `echo "$DEPLOY_OUTCOME"` });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  const ac = new AbortController();
+  t.ctx.signal = ac.signal;
+  const entry = { kind: 'manual', name: 'r' };
+  const done = runEntry(t.ctx, entry);
+  await waitForFile(marker);
+  ac.abort('cancel');
+  assert.equal(await done, 'cancelled');
+  const s = await t.state();
+  assert.equal(s.live, live);
+  assert.equal(s.pending, null);
+  assert.equal(await t.current(), live);
+  assert.equal(s.last.outcome, 'cancelled');
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /outcome: cancelled  build cancelled/);
+  assert.match(await t.events(), /cancelled \S+ cancelled /);
+  assert.match(await t.events(), /notified .* exit 0  cancelled/, 'ON_FAILURE sees DEPLOY_OUTCOME=cancelled');
+  assert.equal(entry.finishing, true, 'set at step 8 on the failure path');
+});
+
+test('cancel mid-DEPLOY is cancelled and leaves the flip pending; finishing is false until DEPLOY exits', async () => {
+  const t = await setup();
+  const marker = path.join(t.p.repoDir('r'), 'deploying');
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', DEPLOY: `touch ${marker}; sleep 30` });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  const ac = new AbortController();
+  t.ctx.signal = ac.signal;
+  const entry = { kind: 'manual', name: 'r' };
+  const done = runEntry(t.ctx, entry);
+  await waitForFile(marker);
+  assert.notEqual(entry.finishing, true, 'a running DEPLOY is not finishing');
+  ac.abort('cancel');
+  assert.equal(await done, 'cancelled');
+  const s = await t.state();
+  assert.ok(s.pending, 'the flip happened; the release is unconfirmed');
+  assert.match(await fs.readFile(s.last.log, 'utf8'), /next: flipd rollback r/);
+});
+
+test('a successful attempt marks its entry finishing; prune still runs after a cancel', async () => {
+  const t = await setup();
+  const ok = { kind: 'manual', name: 'r' };
+  assert.equal(await runEntry(t.ctx, ok), 'ok');
+  assert.equal(ok.finishing, true);
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });
+  const doomed = (await t.state()).previous;
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });
+  const ac = new AbortController();
+  ac.abort('cancel');
+  t.ctx.signal = ac.signal;
+  t.ctx.main = { ...MAIN, keep: 0 };
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'cancelled');
+  await assert.rejects(fs.stat(path.join(t.p.repoDir('r'), 'releases', doomed)));
+  const admin = path.join(t.p.repoDir('r'), 'git', 'worktrees');
+  assert.ok(!(await fs.readdir(admin)).includes(doomed), 'the removal ran to completion: a cancel is not a shutdown');
 });
