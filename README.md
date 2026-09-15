@@ -88,6 +88,7 @@ worth reading first so you know what it will and will not do.
 
     flipd status
     flipd check app
+    flipd history app
     flipd log app [--follow]
     flipd run app          # build now, ignoring watch/ignore filters
     flipd trigger app --wait   # build as a webhook would, and wait for the outcome
@@ -110,6 +111,7 @@ noticed had failed. See [docs/operating.md](docs/operating.md).
 | `flipd trigger <name>` | build as a webhook would; `--wait` exits with the outcome |
 | `flipd rollback <name>` | back to the last confirmed release |
 | `flipd status [name]` | what is live, pending and running |
+| `flipd history <name>` | past attempts, newest first |
 | `flipd log <name>` | the attempt log |
 | `flipd env <name> build\|deploy` | extra environment for `BUILD` or `DEPLOY` |
 | `flipd remove <name>` | drop the config, keep state and logs |

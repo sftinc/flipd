@@ -13,7 +13,8 @@ usage error; exit `3` is always the service being down or unreachable.
 | `flipd trigger <name>` | group | builds as a push would |
 | `flipd rollback <name>` | group | back to the last confirmed release |
 | `flipd status [name]` | group | one row per repo |
-| `flipd log <name>` | group | the latest attempt log |
+| `flipd history <name>` | group | past attempts, newest first |
+| `flipd log <name> [attempt]` | group | an attempt log, the latest by default |
 | `flipd env <name> build\|deploy` | sudo | extra environment for `BUILD` or `DEPLOY` |
 | `flipd remove <name>` | sudo | deletes the conf file, keeps state and logs |
 
@@ -67,8 +68,18 @@ carries on and `flipd log` has it. Made for a forced-command SSH key:
 unreachable. `1` no such repo, nothing configured, or a bare `EACCES` when you
 are not in the `flipd` group.
 
-**`log <name> [--follow]`**
-`0` printed, or tailing until you stop it. `1` no logs, or a read error.
+**`history <name> [--limit N] [--json]`**
+Newest first, 20 by default: attempt id, trigger, sha, outcome, duration, and
+whether that row's release is `live`, `previous` or `pending` now (`pending`
+shown first when a release holds two). An attempt not yet closed reads
+`running`. `--json` prints the rows with `role` and `duration_s`. Read from
+`history.jsonl` and `state.json`, so it works with the service down. `0`
+printed; `1` no history; `2` usage.
+
+**`log <name> [attempt] [--follow]`**
+`0` printed, or tailing until you stop it. `1` no logs, no log for that attempt
+(pruned, or never existed), or a read error. `2` usage, including an attempt that
+is not an attempt id.
 
 **`env <name> build|deploy [--set K=V] [--unset K]`**
 `0` saved. `1` a bad key or value, an unparseable file, or an editor that exited
@@ -89,7 +100,7 @@ only key names.
 `sudo`** — the account conf is root-only because it holds a token that can
 create webhooks.
 
-`status`, `check`, `run`, `trigger`, `rollback` and `log` don't need `sudo`,
+`status`, `check`, `run`, `trigger`, `rollback`, `history` and `log` don't need `sudo`,
 but they do need your account in the `flipd` group (see
 [install.md](install.md)) — none of the three directories they touch is
 world-readable, on purpose: `/etc/flipd/repos` (mode `0750`, `root:flipd` —
