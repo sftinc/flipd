@@ -261,7 +261,8 @@ it green, and nothing notices until a person does.
 
 `ON_FAILURE` runs after any outcome other than `ok` and `skipped`, so it fires
 for a failed fetch (a revoked key), a failed build, a `STOP` that would not
-finish, a failed deploy, and a build cut off by a restart. It gets the deploy
+finish, a failed deploy, a build cut off by a restart, and one stopped by
+`flipd cancel`. It gets the deploy
 environment plus `DEPLOY_OUTCOME` and `DEPLOY_LOG`, has 60 seconds, and its
 own result changes nothing.
 

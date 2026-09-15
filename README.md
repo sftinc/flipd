@@ -93,6 +93,7 @@ worth reading first so you know what it will and will not do.
     flipd run app          # build now, ignoring watch/ignore filters
     flipd trigger app --wait   # build as a webhook would, and wait for the outcome
     flipd rollback app     # back to the last confirmed release
+    flipd cancel app         # stop a hung build
     sudo flipd env app build --set NPM_TOKEN=...
 
 `check` is the one to put in cron — it exits non-zero when the deploy is not
@@ -111,6 +112,7 @@ noticed had failed. See [docs/operating.md](docs/operating.md).
 | `flipd trigger <name>` | build as a webhook would; `--wait` exits with the outcome |
 | `flipd rollback <name>` | back to the last confirmed release |
 | `flipd pause <name>` / `resume` | refuse pushes and triggers, and accept them again |
+| `flipd cancel <name>` | stop the running attempt and drop what is queued |
 | `flipd status [name]` | what is live, pending and running |
 | `flipd history <name>` | past attempts, newest first |
 | `flipd log <name>` | the attempt log |

@@ -1184,3 +1184,92 @@ test('check reports paused with its own exit reason, and pending still outranks 
     await svc.close();
   }
 });
+
+test('cancel: signals a running attempt, drops the owed rerun, answers its trigger --wait, and records it', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  const marker = path.join(p.repoDir('r'), 'building');
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: `touch ${marker}; sleep 30`, DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'cancel', name: 'r' }), { ok: false, error: 'nothing running or queued for r' });
+    assert.equal((await sendCommand(p.sock, { cmd: 'cancel', name: 'nope' })).ok, false);
+    assert.match((await sendCommand(p.sock, { cmd: 'cancel', name: '../x' })).error, /bad repo name/);
+
+    await sendCommand(p.sock, { cmd: 'run', name: 'r' });
+    await waitFor(async () => fs.stat(marker).then(() => true, () => false));
+    const waiting = sendCommand(p.sock, { cmd: 'trigger', name: 'r', wait: true }, { timeoutMs: null });   // owed rerun
+    // The trigger writes this line only after the queue has recorded the rerun.
+    const eventsFile = path.join(p.repoLog('r'), 'events.log');
+    await waitFor(async () => /queued ssh \(running; will run again after\)/.test(await fs.readFile(eventsFile, 'utf8').catch(() => '')));
+    const reply = await sendCommand(p.sock, { cmd: 'cancel', name: 'r' });
+    assert.deepEqual(reply, { ok: true, signalled: true, kind: 'manual', dropped: 1 });
+    assert.deepEqual(await waiting, { ok: true, outcome: 'cancelled' });
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).last.outcome, 'cancelled');
+    assert.match(await fs.readFile(eventsFile, 'utf8'), /cancel requested: manual, 1 queued dropped\n/);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('cancel does not need the conf: an attempt whose conf was removed, or broken, is still cancelled', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  const marker = path.join(p.repoDir('r'), 'building');
+  const conf = { REPO: src.url, BUILD: `rm -f ${marker}; touch ${marker}; sleep 30`, DEPLOY: 'true' };
+  await writeRepoConf(p, 'r', conf);
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    for (const breakConf of [() => fs.rm(p.repoConf('r')), () => fs.writeFile(p.repoConf('r'), 'TYPO=1\n')]) {
+      await fs.rm(marker, { force: true });
+      await writeRepoConf(p, 'r', conf);
+      await sendCommand(p.sock, { cmd: 'run', name: 'r' });
+      await waitFor(async () => fs.stat(marker).then(() => true, () => false));
+      await breakConf();
+      assert.equal((await sendCommand(p.sock, { cmd: 'cancel', name: 'r' })).signalled, true);
+      await waitIdle(p);
+      assert.equal((await readState(p.repoDir('r'))).last.outcome, 'cancelled');
+    }
+  } finally {
+    await svc.close();
+  }
+});
+
+test('cancel on a finishing attempt with nothing queued says so and changes nothing; a failing events.log does not change the reply', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  const marker = path.join(p.repoDir('r'), 'notifying');
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'exit 1', ON_FAILURE: `touch ${marker}; sleep 2` });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  try {
+    await sendCommand(p.sock, { cmd: 'run', name: 'r' });
+    await waitFor(async () => fs.stat(marker).then(() => true, () => false));
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'cancel', name: 'r' }), { ok: false, error: 'attempt already finishing; nothing queued' });
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).last.outcome, 'deploy failed', 'the real outcome, not cancelled');
+
+    // Now with queued work dropped behind a finishing attempt, and events.log unwritable.
+    await fs.rm(marker);
+    await sendCommand(p.sock, { cmd: 'run', name: 'r' });
+    await waitFor(async () => fs.stat(marker).then(() => true, () => false));
+    await sendCommand(p.sock, { cmd: 'run', name: 'r' });
+    const events = path.join(p.repoLog('r'), 'events.log');
+    await fs.rm(events);
+    await fs.mkdir(events);
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'cancel', name: 'r' }), { ok: true, signalled: false, kind: 'manual', dropped: 1 });
+    assert.ok(lines.some((l) => /cancel requested: attempt already finishing, 1 queued dropped/.test(l)));
+    assert.ok(lines.some((l) => /could not record the cancel event/.test(l)));
+    await waitIdle(p);
+  } finally {
+    await svc.close();
+  }
+});

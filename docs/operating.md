@@ -45,6 +45,13 @@ Pushes and triggers are refused while paused; `flipd run` and `flipd rollback`
 still work, so a fix can still go out by hand. `check` exits `6`, which the
 catch-up line above does not act on.
 
+A build that hangs holds the one worker, and every repo waits behind it. To stop it:
+
+    flipd cancel app
+    flipd status app
+
+A cancel during `DEPLOY` leaves the release `pending`, like any failed deploy.
+
 `trigger` is the other way to build: it is the webhook as a command, so it
 refuses on `pending` and skips when already live, and it does not need the
 `check` guard — `flipd trigger app` alone is a safe catch-up. It exists for
