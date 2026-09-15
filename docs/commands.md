@@ -63,10 +63,16 @@ or `skipped`, `1` for a refusal, any other outcome, a crash or a shutdown, and
 carries on and `flipd log` has it. Made for a forced-command SSH key:
 [triggering-over-ssh.md](triggering-over-ssh.md).
 
-**`status [name]`**
+**`status [name] [--json]`**
 `0` printed; the activity column reads `service down` when the socket is merely
 unreachable. `1` no such repo, nothing configured, or a bare `EACCES` when you
-are not in the `flipd` group.
+are not in the `flipd` group. `2` usage. `--json` prints
+`{ "service": "up"|"down", "repos": [...] }`, one object per repo with `name`,
+`branch`, `activity` (`running`, `queued`, `idle`, or `null` when the service is
+down), `live`, `previous` and `pending` (each `{ release, sha }` or `null`, shas
+in full), `last` as recorded, `warnings`, and `error` — set, with the state
+fields `null`, for a conf that will not load or a `state.json` that cannot be
+read, so a script never loses a repo from the list.
 
 **`history <name> [--limit N] [--json]`**
 Newest first, 20 by default: attempt id, trigger, sha, outcome, duration, and

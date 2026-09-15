@@ -11,7 +11,7 @@ const USAGE = `usage: flipd <command> [args]
   run <name> [--now]                 queue a forced build now (--now skips STOP)
   trigger <name> [--wait]            queue a build as a webhook would (--wait: exit with the outcome)
   rollback <name> [--now]            queue a rollback (--now skips STOP)
-  status [name]                      one row per repo
+  status [name] [--json]             one row per repo (--json: the same, as an object)
   history <name> [--limit N] [--json]  past attempts, newest first
   log <name> [attempt] [--follow]    print or tail an attempt log (the latest by default)
   env <name> build|deploy [--set K=V] [--unset K]
