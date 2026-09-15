@@ -1149,6 +1149,16 @@ test('pause and resume: idempotent, refuse a push and a trigger but not run or r
     await fs.stat(p.repoPaused('r'));
     assert.ok(lines.some((l) => /could not record the paused event/.test(l)));
     assert.equal((await sendCommand(p.sock, { cmd: 'resume', name: 'r' })).resumed, true);
+
+    // A reason with non-ASCII and a DEL byte, and one far longer than the
+    // 200-character cap, must never reach journald raw — cleanForLog has to run
+    // before the very first `socket: ...` journal line, not just inside the
+    // pause arm below it.
+    lines.length = 0;
+    const overlong = 'x'.repeat(250);
+    await sendCommand(p.sock, { cmd: 'pause', name: 'r', reason: `café\x7f${overlong}` });
+    assert.ok(lines.every((l) => !l.includes('café') && !l.includes('\x7f') && !l.includes(overlong)));
+    await sendCommand(p.sock, { cmd: 'resume', name: 'r' });
   } finally {
     await svc.close();
   }
