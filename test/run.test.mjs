@@ -962,3 +962,14 @@ test('a state.json that parses but has the wrong shape takes the unreadable path
   assert.equal(await fs.readFile(stateFile, 'utf8'), text);
   assert.match(await t.events(), /fetch-failed .*state\.json is unreadable/);
 });
+
+test('a failure writing the started event ends the attempt as fetch failed, not a crash that leaves it running', async () => {
+  const t = await setup();
+  // events.log as a directory: appendFile fails with EISDIR, the way a full or
+  // read-only disk would, and it fails first at the `started` line.
+  await fs.mkdir(path.join(t.p.repoLog('r'), 'events.log'), { recursive: true });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'fetch failed');
+  const s = await t.state();
+  assert.equal(s.last.outcome, 'fetch failed');
+  assert.ok(s.last.finished, 'finished is written, so status does not show the repo running');
+});
