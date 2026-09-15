@@ -291,3 +291,44 @@ test('stop settles discarded entries — including a rollback queued via commit(
   await q.drain();
   assert.deepEqual(await running.covered, { done: 'completed', outcome: 'ok' });
 });
+
+test('cancel drops only that name\'s queued entries and owed rerun, settles them as cancelled, and returns the running entry', async () => {
+  const g = gate();
+  const ran = [];
+  const q = createQueue(async (e) => { ran.push(`${e.kind}:${e.name}`); await g.p; return 'ok'; });
+  q.enqueue({ kind: 'manual', name: 'a' });                     // running
+  const owed = q.enqueue({ kind: 'webhook', name: 'a' });       // run-again token
+  const queuedA = q.enqueue({ kind: 'manual', name: 'a' });
+  const queuedB = q.enqueue({ kind: 'webhook', name: 'b' });
+  const r = q.cancel('a');
+  assert.equal(r.running.name, 'a');
+  assert.equal(r.dropped, 2, 'the queued manual run and the owed rerun');
+  assert.deepEqual(await owed.covered, { done: 'completed', outcome: 'cancelled' });
+  assert.deepEqual(await queuedA.covered, { done: 'completed', outcome: 'cancelled' });
+  g.open();
+  await q.drain();
+  assert.deepEqual(ran, ['manual:a', 'webhook:b'], 'no rerun of a, b untouched');
+  assert.deepEqual(await queuedB.covered, { done: 'completed', outcome: 'ok' });
+  assert.equal(q.enqueue({ kind: 'manual', name: 'a' }).queued, true, 'a later request for a works');
+  await q.drain();
+  assert.deepEqual(q.cancel('zzz'), { running: null, dropped: 0 });
+});
+
+test('cancel invalidates rollback reservations: counted once, stale commits refused, the new count left alone', async () => {
+  const q = createQueue(async () => {});
+  const old1 = q.reserveRollback('a');
+  const old2 = q.reserveRollback('a');
+  const other = q.reserveRollback('b');
+  assert.equal(q.cancel('a').dropped, 2, 'two open reservations, each counted once');
+  assert.equal(q.cancel('a').dropped, 0, 'a repeated cancel counts nothing');
+  assert.equal(q.protectedTargets('a').reserved, false, 'prune is no longer deferred by reservations a cancel ended');
+  const fresh = q.reserveRollback('a');
+  assert.deepEqual(old1.commit('rel-1'), { queued: false, reason: 'cancelled' });
+  old2.cancel();
+  assert.equal(q.protectedTargets('a').reserved, true, 'stale commit and cancel did not decrement the fresh reservation');
+  assert.equal(fresh.commit('rel-2').queued, true);
+  assert.equal(q.protectedTargets('a').reserved, false);
+  assert.equal(q.protectedTargets('b').reserved, true, 'another repo\'s reservation is unaffected');
+  assert.equal(other.commit('rel-3').queued, true);
+  await q.drain();
+});
