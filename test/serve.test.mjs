@@ -1075,3 +1075,29 @@ test('reconcile does not delete a release directory whose state entry is null', 
   await reconcile(p, () => {});
   await fs.stat(path.join(dir, 'releases', 'r1'));
 });
+
+test('rollback --to goes back two releases, and refuses one that never deployed', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    for (let i = 0; i < 3; i++) {
+      await sendCommand(p.sock, { cmd: 'run', name: 'r' });
+      await waitIdle(p);
+    }
+    const s = await readState(p.repoDir('r'));
+    const oldest = Object.keys(s.releases).find((id) => id !== s.live && id !== s.previous);
+    assert.ok(oldest);
+    const rb = await sendCommand(p.sock, { cmd: 'rollback', name: 'r', to: oldest });
+    assert.deepEqual(rb, { ok: true, queued: true, target: oldest });
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).live, oldest);
+    const refused = await sendCommand(p.sock, { cmd: 'rollback', name: 'r', to: oldest });
+    assert.deepEqual(refused, { ok: false, error: `release ${oldest} is already live` });
+  } finally {
+    await svc.close();
+  }
+});

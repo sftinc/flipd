@@ -164,7 +164,7 @@ test('flipd run and rollback: an unknown flag is usage (exit 2); --now is sent a
   assert.match(ioBad.err(), /usage: flipd run <name> \[--now\]/);
   const ioBadRb = captureIO();
   assert.equal(await rollbackCmd(['r', '--bogus'], { paths: p, stdout: ioBadRb.stdout, stderr: ioBadRb.stderr }), 2);
-  assert.match(ioBadRb.err(), /usage: flipd rollback <name> \[--now\]/);
+  assert.match(ioBadRb.err(), /usage: flipd rollback <name> \[--to <release-id\|sha>\] \[--now\]/);
 
   const svc = await serve({ paths: p, journal: () => {} });
   try {
@@ -190,4 +190,14 @@ test('flipd run and rollback: an unknown flag is usage (exit 2); --now is sent a
   } finally {
     await svc.close();
   }
+});
+
+test('flipd rollback --to: a missing or malformed value is usage; run does not take --to', async () => {
+  const p = await makePrefix();
+  for (const args of [['r', '--to'], ['r', '--to', 'HEAD~1'], ['r', '--to', 'aaaaaaa', '--to', 'bbbbbbb']]) {
+    const o = captureIO();
+    assert.equal(await rollbackCmd(args, { paths: p, stdout: o.stdout, stderr: o.stderr }), 2, args.join(' '));
+  }
+  const o = captureIO();
+  assert.equal(await runCmd(['r', '--to', 'aaaaaaa'], { paths: p, stdout: o.stdout, stderr: o.stderr }), 2);
 });

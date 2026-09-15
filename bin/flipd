@@ -10,7 +10,7 @@ const USAGE = `usage: flipd <command> [args]
   check <name> [--set-remote]        verify config, key, clone, and remote head
   run <name> [--now]                 queue a forced build now (--now skips STOP)
   trigger <name> [--wait]            queue a build as a webhook would (--wait: exit with the outcome)
-  rollback <name> [--now]            queue a rollback (--now skips STOP)
+  rollback <name> [--to R] [--now]   queue a rollback, to previous or to release/sha R (--now skips STOP)
   status [name] [--json]             one row per repo (--json: the same, as an object)
   history <name> [--limit N] [--json]  past attempts, newest first
   log <name> [attempt] [--follow]    print or tail an attempt log (the latest by default)

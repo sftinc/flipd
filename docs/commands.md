@@ -11,7 +11,7 @@ usage error; exit `3` is always the service being down or unreachable.
 | `flipd check <name>` | group | verifies the setup and whether live matches the branch head |
 | `flipd run <name>` | group | builds now, ignoring `WATCH` and `IGNORE` |
 | `flipd trigger <name>` | group | builds as a push would |
-| `flipd rollback <name>` | group | back to the last confirmed release |
+| `flipd rollback <name>` | group | back to the last confirmed release, or `--to` an older one |
 | `flipd status [name]` | group | one row per repo |
 | `flipd history <name>` | group | past attempts, newest first |
 | `flipd log <name> [attempt]` | group | an attempt log, the latest by default |
@@ -44,12 +44,19 @@ reprints the setup recipe: the webhook one when the conf has `PUBLIC_HOST`
 (Payload URL, where the secret is, a `gh api` pipeline), the SSH trigger one
 when it does not.
 
-**`run <name> [--now]`** and **`rollback <name> [--now]`**
+**`run <name> [--now]`** and **`rollback <name> [--to <release-id|sha>] [--now]`**
 `0` the request was handled — stdout says `queued <name>` (or
 `queued rollback of <name> to <sha>`) or `not queued: <reason>` when a build for
 it is already running or queued, or the service is shutting down. `1` the
 service refused it, which means a config error. `--now` skips `STOP` for that
 one attempt.
+
+`--to` rolls back to any kept release that was confirmed live at least once,
+named by its release id (from `flipd history`) or by a sha of 7 or more hex
+characters — the newest confirmed release built from that commit. It is refused,
+exit `1`, for a release that never deployed (a failed build or deploy), one no
+longer kept (the refusal lists the ones that are), an ambiguous sha prefix, and
+the live release when nothing is `pending`.
 
 **`trigger <name> [--wait]`**
 The webhook as a command: refused on `pending`, skipped when the branch head is

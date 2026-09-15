@@ -6,7 +6,7 @@ import path from 'node:path';
 import { makePrefix, makeSourceRepo, writeRepoConf, tmpdir } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
 import { readState, writeState } from '../lib/state.mjs';
-import { runEntry, runOnFailure, resolveRollbackTarget } from '../lib/run.mjs';
+import { runEntry, runOnFailure, resolveRollbackTarget, resolveRollbackTo } from '../lib/run.mjs';
 import { runCheck } from '../lib/check.mjs';
 import { gitEnv, setRemoteUrl } from '../lib/git.mjs';
 import { readHistory } from '../lib/log.mjs';
@@ -1044,4 +1044,46 @@ test('history is a record, not a gate: a failing append changes no outcome and s
   assert.match(await fs.readFile((await t.state()).last.log, 'utf8'), /outcome: ok/);
   assert.match(await t.events(), /finished .* ok /);
   assert.ok(lines.some((l) => /could not record history/.test(l)));
+});
+
+test('a confirmed deploy stamps its release; a failed deploy does not', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  let s = await t.state();
+  assert.ok(Date.parse(s.releases[s.live].confirmed), 'confirmed is an ISO time');
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', DEPLOY: 'exit 1' });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });
+  s = await t.state();
+  assert.equal(s.releases[s.pending].confirmed, undefined);
+});
+
+test('resolveRollbackTo: ids, shas, prefixes, and every refusal', () => {
+  const A = '2026-09-10T00-00-00Z-aaaaaaa', B = '2026-09-11T00-00-00Z-bbbbbbb', B2 = '2026-09-12T00-00-00Z-bbbbbbb';
+  const F = '2026-09-13T00-00-00Z-fffffff', L = '2026-09-14T00-00-00Z-ccccccc', P = '2026-09-15T00-00-00Z-ddddddd';
+  const sha = (c) => c.repeat(40);
+  const state = {
+    live: L, previous: null, pending: null,
+    releases: {
+      [A]: { sha: sha('a'), built: '2026-09-10', confirmed: 'x' },
+      [B]: { sha: sha('b'), built: '2026-09-11', confirmed: 'x' },
+      [B2]: { sha: sha('b'), built: '2026-09-12', confirmed: 'x' },
+      [F]: { sha: sha('f'), built: '2026-09-13' },            // a failed build or deploy: never confirmed
+      [L]: { sha: sha('c'), built: '2026-09-14' },            // legacy live, no stamp
+    },
+  };
+  assert.deepEqual(resolveRollbackTo(state, A), { target: A });
+  assert.deepEqual(resolveRollbackTo(state, sha('a')), { target: A });
+  assert.deepEqual(resolveRollbackTo(state, 'aaaaaaa'), { target: A });
+  assert.deepEqual(resolveRollbackTo(state, 'bbbbbbb'), { target: B2 }, 'a sha built twice: the newest confirmed');
+  assert.match(resolveRollbackTo(state, F).error, /never confirmed live/);
+  assert.match(resolveRollbackTo(state, '2026-01-01T00-00-00Z-1234567').error, /is not kept; confirmed and kept releases: .*2026-09-12T00-00-00Z-bbbbbbb 2026-09-11T00-00-00Z-bbbbbbb 2026-09-10T00-00-00Z-aaaaaaa/);
+  assert.match(resolveRollbackTo(state, '1234567').error, /is not kept/);
+  assert.match(resolveRollbackTo(state, L).error, /is already live/);
+  assert.deepEqual(resolveRollbackTo({ ...state, pending: P, releases: { ...state.releases, [P]: { sha: sha('d') } } }, L), { target: L }, 'live is a valid target while pending');
+  assert.deepEqual(resolveRollbackTo({ ...state, previous: F }, F), { target: F }, 'legacy previous without a stamp counts as confirmed');
+  const twoShas = { live: null, previous: null, pending: null, releases: { [A]: { sha: 'abc1234' + 'a'.repeat(33), confirmed: 'x' }, [B]: { sha: 'abc1234' + 'b'.repeat(33), confirmed: 'x' } } };
+  assert.match(resolveRollbackTo(twoShas, 'abc1234').error, /sha prefix abc1234 is ambiguous: /);
+  assert.match(resolveRollbackTo({ live: null, previous: null, pending: null, releases: {} }, 'aaaaaaa').error, /confirmed and kept releases: none/);
+  assert.match(resolveRollbackTo(state, 'HEAD~1').error, /release id or a sha/);
 });

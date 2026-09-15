@@ -8,6 +8,14 @@
     flipd rollback app     # back to the last confirmed release
     sudo flipd env app build --set NPM_TOKEN=...
 
+To go further back than the previous release, find it and name it:
+
+    flipd history app
+    flipd rollback app --to 2026-09-14T16-01-20Z-1a2b3c4
+
+Only a release that deployed successfully at least once can be named, and only
+while it is still kept (`KEEP`).
+
 `check` is the one to put in cron: it exits `0` when the deploy is confirmed
 and live matches the branch head, and non-zero otherwise, so
 
