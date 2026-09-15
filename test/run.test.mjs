@@ -9,6 +9,7 @@ import { readState, writeState } from '../lib/state.mjs';
 import { runEntry, runOnFailure, resolveRollbackTarget } from '../lib/run.mjs';
 import { runCheck } from '../lib/check.mjs';
 import { gitEnv, setRemoteUrl } from '../lib/git.mjs';
+import { readHistory } from '../lib/log.mjs';
 
 const MAIN = { listen: { host: '127.0.0.1', port: 0 }, publicHost: null, webhookSecret: 's', keep: 5, logKeep: 50, logMaxBytes: 52428800 };
 
@@ -22,7 +23,7 @@ async function setup({ build = 'echo built > built.marker', deploy = 'echo deplo
   const ctx = { paths: p, main: MAIN, repo, now: () => new Date(), protectedTargets: () => ({ targets, reserved: false }), journal: () => {}, graceMs: 200 };
   const state = () => readState(p.repoDir('r'));
   const current = async () => path.basename(await fs.readlink(path.join(p.repoDir('r'), 'current')));
-  const logs = async () => (await fs.readdir(p.repoLog('r'))).filter((n) => n !== 'events.log').sort();
+  const logs = async () => (await fs.readdir(p.repoLog('r'))).filter((n) => n.endsWith('.log') && n !== 'events.log').sort();
   const events = async () => fs.readFile(path.join(p.repoLog('r'), 'events.log'), 'utf8');
   return { p, src, sha1, repo, ctx, targets, state, current, logs, events };
 }
@@ -982,4 +983,65 @@ test('an attempt stopped by an unreadable state.json still prunes attempt logs t
   for (let i = 0; i < 3; i++) assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'fetch failed');
   const logs = (await fs.readdir(t.p.repoLog('r'))).filter((n) => n.endsWith('.log') && n !== 'events.log');
   assert.equal(logs.length, 2);
+});
+
+test('history: one row per attempt, equal to state.last as it closed', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  await t.src.commit({ 'mta/z.mjs': 'z' });
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });
+  const { rows } = await readHistory(t.p.repoLog('r'));
+  assert.equal(rows.length, 2);
+  assert.equal(new Set(rows.map((r) => r.attempt)).size, 2, 'the backstop did not duplicate the first row');
+  assert.deepEqual(rows[1], (await t.state()).last);
+});
+
+test('history: the unreadable-state path writes a fetch failed row', async () => {
+  const t = await setup();
+  await fs.mkdir(t.p.repoDir('r'), { recursive: true });
+  await fs.writeFile(path.join(t.p.repoDir('r'), 'state.json'), '{ truncated');
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const { rows } = await readHistory(t.p.repoLog('r'));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].outcome, 'fetch failed');
+  assert.equal(rows[0].sha, null);
+  assert.ok(rows[0].finished);
+});
+
+test('history backstop: an attempt reconcile() finished, and one left unfinished, gain rows when the next attempt opens', async () => {
+  const t = await setup();
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const logDir = t.p.repoLog('r');
+  // As reconcile() leaves an attempt the service died inside: finished, no row.
+  let s = await t.state();
+  s.last = { attempt: '2020-01-01T00-00-00Z', trigger: 'webhook', sha: null, release: null, outcome: 'interrupted', started: '2020-01-01T00:00:00.000Z', finished: '2020-01-01T00:00:05.000Z', log: '/x' };
+  await writeState(t.p.repoDir('r'), s);
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });
+  let rows = (await readHistory(logDir)).rows;
+  assert.ok(rows.some((r) => r.attempt === '2020-01-01T00-00-00Z' && r.outcome === 'interrupted'));
+  // Unfinished, as a crash before close leaves it: recorded as interrupted, finished null.
+  s = await t.state();
+  s.last = { attempt: '2020-01-02T00-00-00Z', trigger: 'manual', sha: null, release: null, outcome: null, started: '2020-01-02T00:00:00.000Z', finished: null, log: '/y' };
+  await writeState(t.p.repoDir('r'), s);
+  await runEntry(t.ctx, { kind: 'manual', name: 'r' });
+  rows = (await readHistory(logDir)).rows;
+  const row = rows.find((r) => r.attempt === '2020-01-02T00-00-00Z');
+  assert.equal(row.outcome, 'interrupted');
+  assert.equal(row.finished, null);
+  // A malformed last is skipped, not a crash.
+  s = await t.state();
+  s.last = { attempt: 42 };
+  await writeState(t.p.repoDir('r'), s);
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'ok');
+});
+
+test('history is a record, not a gate: a failing append changes no outcome and suppresses no other record', async () => {
+  const t = await setup();
+  await fs.mkdir(path.join(t.p.repoLog('r'), 'history.jsonl'), { recursive: true });   // EISDIR on every append and read
+  const lines = [];
+  t.ctx.journal = (l) => lines.push(l);
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  assert.match(await fs.readFile((await t.state()).last.log, 'utf8'), /outcome: ok/);
+  assert.match(await t.events(), /finished .* ok /);
+  assert.ok(lines.some((l) => /could not record history/.test(l)));
 });

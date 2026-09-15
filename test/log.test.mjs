@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { attemptIdFor, openAttemptLog, appendEvent, pruneLogs, latestLog, makeScrubber } from '../lib/log.mjs';
+import { attemptIdFor, openAttemptLog, appendEvent, pruneLogs, latestLog, makeScrubber, appendHistory, readHistory } from '../lib/log.mjs';
 
 const tmp = () => fs.mkdtemp(path.join(os.tmpdir(), 'flipd-log-'));
 const fixed = () => new Date('2026-09-05T08:14:02.345Z');
@@ -141,4 +141,23 @@ test('an id is never reused after its log is pruned (LOG_KEEP=1, three attempts 
   const c = await openAttemptLog(dir, { now: fixed });
   await c.close();
   assert.deepEqual([a.id, b.id, c.id], ['2026-09-05T08-14-02Z', '2026-09-05T08-14-02Z-2', '2026-09-05T08-14-02Z-3']);
+});
+
+test('appendHistory appends one JSON line and trims to keep on every append; keep 0 keeps all', async () => {
+  const dir = await tmp();
+  for (let i = 1; i <= 5; i++) await appendHistory(dir, { attempt: `a${i}`, outcome: 'ok' }, 3);
+  assert.deepEqual((await readHistory(dir)).rows.map((r) => r.attempt), ['a3', 'a4', 'a5']);
+  const all = await tmp();
+  for (let i = 1; i <= 5; i++) await appendHistory(all, { attempt: `a${i}` }, 0);
+  assert.equal((await readHistory(all)).rows.length, 5);
+  assert.deepEqual((await fs.readdir(dir)).sort(), ['history.jsonl'], 'no temporary file left behind');
+});
+
+test('readHistory skips a torn line and a row without a string attempt; a missing file is empty', async () => {
+  const dir = await tmp();
+  assert.deepEqual(await readHistory(dir), { rows: [], skipped: 0 });
+  await fs.writeFile(path.join(dir, 'history.jsonl'), '{"attempt":"a1"}\n{"attem\n{"attempt":7}\nnull\n{"attempt":"a2"}\n');
+  const h = await readHistory(dir);
+  assert.deepEqual(h.rows.map((r) => r.attempt), ['a1', 'a2']);
+  assert.equal(h.skipped, 3);
 });
