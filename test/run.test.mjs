@@ -973,3 +973,13 @@ test('a failure writing the started event ends the attempt as fetch failed, not 
   assert.equal(s.last.outcome, 'fetch failed');
   assert.ok(s.last.finished, 'finished is written, so status does not show the repo running');
 });
+
+test('an attempt stopped by an unreadable state.json still prunes attempt logs to LOG_KEEP', async () => {
+  const t = await setup();
+  t.ctx.main = { ...MAIN, logKeep: 2 };
+  await fs.mkdir(t.p.repoDir('r'), { recursive: true });
+  await fs.writeFile(path.join(t.p.repoDir('r'), 'state.json'), '{ truncated');
+  for (let i = 0; i < 3; i++) assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'fetch failed');
+  const logs = (await fs.readdir(t.p.repoLog('r'))).filter((n) => n.endsWith('.log') && n !== 'events.log');
+  assert.equal(logs.length, 2);
+});
