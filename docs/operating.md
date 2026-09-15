@@ -36,6 +36,15 @@ at, and rebuilding over it unattended is how it never is. `5` outranks `4`,
 so a repo that is both behind and pending stays put until someone runs
 `flipd rollback` or `flipd run` by hand.
 
+During an incident, stop deploys arriving while you work:
+
+    flipd pause app --reason "db migration"
+    flipd resume app
+
+Pushes and triggers are refused while paused; `flipd run` and `flipd rollback`
+still work, so a fix can still go out by hand. `check` exits `6`, which the
+catch-up line above does not act on.
+
 `trigger` is the other way to build: it is the webhook as a command, so it
 refuses on `pending` and skips when already live, and it does not need the
 `check` guard — `flipd trigger app` alone is a safe catch-up. It exists for

@@ -110,6 +110,7 @@ noticed had failed. See [docs/operating.md](docs/operating.md).
 | `flipd run <name>` | build now, ignoring `WATCH` and `IGNORE` |
 | `flipd trigger <name>` | build as a webhook would; `--wait` exits with the outcome |
 | `flipd rollback <name>` | back to the last confirmed release |
+| `flipd pause <name>` / `resume` | refuse pushes and triggers, and accept them again |
 | `flipd status [name]` | what is live, pending and running |
 | `flipd history <name>` | past attempts, newest first |
 | `flipd log <name>` | the attempt log |

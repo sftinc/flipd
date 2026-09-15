@@ -12,6 +12,8 @@ usage error; exit `3` is always the service being down or unreachable.
 | `flipd run <name>` | group | builds now, ignoring `WATCH` and `IGNORE` |
 | `flipd trigger <name>` | group | builds as a push would |
 | `flipd rollback <name>` | group | back to the last confirmed release, or `--to` an older one |
+| `flipd pause <name>` | group | refuse pushes and triggers until `resume` |
+| `flipd resume <name>` | group | accept them again |
 | `flipd status [name]` | group | one row per repo |
 | `flipd history <name>` | group | past attempts, newest first |
 | `flipd log <name> [attempt]` | group | an attempt log, the latest by default |
@@ -36,7 +38,9 @@ not, or a host key that could not be scanned.
 **`check <name> [--set-remote]`**
 `0` pass and live matches the branch head. `4` pass, but live is behind —
 nothing wrong, just not deployed yet. `5` pass, but a release is `pending`,
-flipped to and never confirmed; it outranks `4`. `1` a row failed: config, key
+flipped to and never confirmed; it outranks `4`. `6` pass, but the repo is
+paused; `5` outranks it and it outranks `4`, so the cron catch-up never
+force-builds a paused repo. `1` a row failed: config, key
 or clone. Two rows worth knowing: `shares`, the other repo files a push to this
 repository also builds, and `stale`, a repo file holding this repository's forge
 id under a different `REPO` — a rename applied to one and not the other. It also
@@ -57,6 +61,15 @@ characters — the newest confirmed release built from that commit. It is refuse
 exit `1`, for a release that never deployed (a failed build or deploy), one no
 longer kept (the refusal lists the ones that are), an ambiguous sha prefix, and
 the live release when nothing is `pending`.
+
+**`pause <name> [--reason TEXT]`** and **`resume <name>`**
+A paused repo refuses pushes (answered `200 refused: paused`, so the forge does
+not record a lost delivery) and `flipd trigger` (exit `1`), including a push
+already queued when the pause landed; `run` and `rollback` still work. Both
+commands are idempotent and exit `0`: a second `pause` keeps the first reason
+and says `already paused since …`; `resume` on a repo that is not paused says
+so. `1` no such repo; `2` usage; `3` service down. The reason is cut to 200
+printable characters. `status` shows a `PAUSED` row and `check` exits `6`.
 
 **`trigger <name> [--wait]`**
 The webhook as a command: refused on `pending`, skipped when the branch head is
@@ -113,7 +126,7 @@ only key names.
 `sudo`** — the account conf is root-only because it holds a token that can
 create webhooks.
 
-`status`, `check`, `run`, `trigger`, `rollback`, `history` and `log` don't need `sudo`,
+`status`, `check`, `run`, `trigger`, `rollback`, `pause`, `resume`, `history` and `log` don't need `sudo`,
 but they do need your account in the `flipd` group (see
 [install.md](install.md)) — none of the three directories they touch is
 world-readable, on purpose: `/etc/flipd/repos` (mode `0750`, `root:flipd` —

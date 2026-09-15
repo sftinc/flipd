@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makePrefix, makeSourceRepo, writeRepoConf, tmpdir } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
-import { readState, writeState } from '../lib/state.mjs';
+import { readState, writeState, writePaused } from '../lib/state.mjs';
 import { runEntry, runOnFailure, resolveRollbackTarget, resolveRollbackTo } from '../lib/run.mjs';
 import { runCheck } from '../lib/check.mjs';
 import { gitEnv, setRemoteUrl } from '../lib/git.mjs';
@@ -1086,4 +1086,12 @@ test('resolveRollbackTo: ids, shas, prefixes, and every refusal', () => {
   assert.match(resolveRollbackTo(twoShas, 'abc1234').error, /sha prefix abc1234 is ambiguous: /);
   assert.match(resolveRollbackTo({ live: null, previous: null, pending: null, releases: {} }, 'aaaaaaa').error, /confirmed and kept releases: none/);
   assert.match(resolveRollbackTo(state, 'HEAD~1').error, /release id or a sha/);
+});
+
+test('a push queued before a pause is refused when it reaches the worker; a manual run is not', async () => {
+  const t = await setup();
+  await writePaused(t.p.repoDir('r'), { since: new Date().toISOString(), reason: '' });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'refused');
+  assert.match(await t.events(), /refused paused since .*; run flipd resume r/);
+  assert.equal(await runEntry(t.ctx, { kind: 'manual', name: 'r' }), 'ok');
 });

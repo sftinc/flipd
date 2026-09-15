@@ -1101,3 +1101,76 @@ test('rollback --to goes back two releases, and refuses one that never deployed'
     await svc.close();
   }
 });
+
+test('pause and resume: idempotent, refuse a push and a trigger but not run or rollback, recorded in both sinks', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  const lines = [];
+  const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
+  const eventsFile = path.join(p.repoLog('r'), 'events.log');
+  try {
+    const first = await sendCommand(p.sock, { cmd: 'pause', name: 'r', reason: 'incident\nforged line' });
+    assert.equal(first.ok, true);
+    assert.equal(first.already, false);
+    const again = await sendCommand(p.sock, { cmd: 'pause', name: 'r', reason: 'other' });
+    assert.deepEqual(again, { ok: true, already: true, since: first.since });
+
+    const body = JSON.stringify({ ref: 'refs/heads/main', after: 'b'.repeat(40), pusher: { name: 'w' }, repository: { ssh_url: src.url } });
+    const sig = 'sha256=' + createHmac('sha256', 'testsecret').update(body).digest('hex');
+    const res = await fetch(`http://127.0.0.1:${svc.hookPort}/deploy`, { method: 'POST', body, headers: { 'x-hub-signature-256': sig, 'x-github-event': 'push' } });
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /refused r: paused/);
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'trigger', name: 'r' }), { ok: false, refused: 'paused' });
+
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'run', name: 'r' }), { ok: true, queued: true });
+    await waitIdle(p);
+    assert.equal((await readState(p.repoDir('r'))).last.outcome, 'ok');
+
+    const events = await fs.readFile(eventsFile, 'utf8');
+    assert.ok(events.split('\n').filter(Boolean).every((l) => /^\d{4}-\d{2}-\d{2}T/.test(l)), 'a newline in the reason cannot forge a line');
+    assert.match(events, /paused incident\?forged line\n/);
+    assert.match(events, /refused paused since /);
+    assert.ok(lines.every((l) => !l.includes('\n')));
+
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'resume', name: 'r' }), { ok: true, resumed: true });
+    assert.deepEqual(await sendCommand(p.sock, { cmd: 'resume', name: 'r' }), { ok: true, resumed: false });
+    assert.match(await fs.readFile(eventsFile, 'utf8'), /resumed\n/);
+    const accepted = await sendCommand(p.sock, { cmd: 'trigger', name: 'r' });
+    assert.equal(accepted.ok, true);
+    await waitIdle(p);
+
+    // A failing events.log write does not turn a pause that happened into an error.
+    await fs.rm(eventsFile);
+    await fs.mkdir(eventsFile);
+    assert.equal((await sendCommand(p.sock, { cmd: 'pause', name: 'r' })).ok, true);
+    await fs.stat(p.repoPaused('r'));
+    assert.ok(lines.some((l) => /could not record the paused event/.test(l)));
+    assert.equal((await sendCommand(p.sock, { cmd: 'resume', name: 'r' })).resumed, true);
+  } finally {
+    await svc.close();
+  }
+});
+
+test('check reports paused with its own exit reason, and pending still outranks it', async () => {
+  const p = await makePrefix();
+  await writeMain(p);
+  const src = await makeSourceRepo();
+  await src.commit({ a: '1' });
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.repoDir('r'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('r'), 'key'), 'not-a-real-key');
+  await writeState(p.repoDir('r'), { ...emptyState(), live: 'a', releases: { a: { sha: 'f'.repeat(40) } } });   // not the head: behind
+  await fs.writeFile(p.repoPaused('r'), JSON.stringify({ since: new Date().toISOString(), reason: 'incident' }));
+  const svc = await serve({ paths: p, journal: () => {} });
+  try {
+    const r = await sendCommand(p.sock, { cmd: 'check', name: 'r', setRemote: false }, { timeoutMs: 30000 });
+    assert.equal(r.paused, true);
+    assert.equal(r.behind, true);
+    assert.ok(r.rows.some(([k, v]) => k === 'paused' && /incident/.test(v)));
+  } finally {
+    await svc.close();
+  }
+});

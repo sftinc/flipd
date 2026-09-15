@@ -19,6 +19,8 @@ test('status: rows, PENDING, stale hook host, service down', async () => {
   await writeRepoConf(p, 'b', { REPO: 'git@github.com:o/b.git', BUILD: 'x', DEPLOY: 'y', BRANCH: 'dev' });
   await writeRepoConf(p, 'c', { REPO: 'z', TYPO: '1' });
   await writeState(p.repoDir('a'), { ...emptyState(), live: 'r1', pending: 'r2', releases: { r1: { sha: 'a'.repeat(40) }, r2: { sha: 'b'.repeat(40) } }, last: { attempt: 't', outcome: 'deploy failed', finished: '2026-09-05T08:14:02Z', log: '/l' } });
+  await fs.mkdir(p.repoDir('b'), { recursive: true });
+  await fs.writeFile(path.join(p.repoDir('b'), 'paused'), JSON.stringify({ since: '2026-09-15T10:00:00.000Z', reason: 'incident' }));
   const o = io();
   assert.equal(await status([], { paths: p, ...o }), 0);
   const text = o.out();
@@ -26,6 +28,7 @@ test('status: rows, PENDING, stale hook host, service down', async () => {
   assert.match(text, /PENDING r2/);
   assert.match(text, /webhook.*old\.example\.com.*new\.example\.com/);
   assert.match(text, /^b\s+dev\s+-\s+never/m);
+  assert.match(text, /PAUSED since 2026-09-15T10:00:00\.000Z  incident\s+run: flipd resume b/);
   assert.match(text, /^c\s+config error/m);
   const one = io();
   assert.equal(await status(['b'], { paths: p, ...one }), 0);
@@ -76,6 +79,7 @@ test('status --json: one object per repo, errors in place, service down', async 
   assert.equal(by.a.error, null);
   assert.equal(by.b.live, null);
   assert.equal(by.b.last, null);
+  assert.equal(by.a.paused, null);
   assert.match(by.broken.error, /state unreadable/);
   assert.match(by.shape.error, /state unreadable.*releases is not an object/);
   assert.equal(by.c.branch, null);

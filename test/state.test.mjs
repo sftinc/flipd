@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { emptyState, readState, writeState, StateError } from '../lib/state.mjs';
+import { emptyState, readState, writeState, StateError, readPaused, writePaused, clearPaused } from '../lib/state.mjs';
 
 test('missing state reads as empty', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
@@ -92,5 +92,20 @@ test('the shape check accepts a legacy partial file, any github_id, and a malfor
     await fs.writeFile(path.join(dir, 'state.json'), JSON.stringify(value));
     const s = await readState(dir);
     assert.deepEqual(s.releases, {});
+  }
+});
+
+test('readPaused: absent is null, a written marker round-trips, anything else is paused and unreadable', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-state-'));
+  assert.equal(await readPaused(dir), null);
+  const marker = { since: new Date().toISOString(), reason: 'incident' };
+  await writePaused(dir, marker);
+  assert.deepEqual(await readPaused(dir), marker);
+  assert.equal(await clearPaused(dir), true);
+  assert.equal(await clearPaused(dir), false);
+  const unreadable = { since: null, reason: '(marker unreadable)' };
+  for (const text of ['{ bad', 'null', 'false', '[]', '{}', '{"since":"x","reason":[]}', '{"since":"\\n","reason":""}', '{"since":"2026-09-15","reason":""}', `{"since":"${marker.since}","reason":"a\\nb"}`]) {
+    await fs.writeFile(path.join(dir, 'paused'), text);
+    assert.deepEqual(await readPaused(dir), unreadable, text);
   }
 });
