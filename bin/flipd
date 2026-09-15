@@ -15,7 +15,7 @@ const USAGE = `usage: flipd <command> [args]
   pause <name> [--reason TEXT]       refuse pushes and triggers until resume (run and rollback still work)
   resume <name>                      accept pushes and triggers again
   status [name] [--json]             one row per repo (--json: the same, as an object)
-  history <name> [--limit N] [--json]  past attempts, newest first
+  history <name> [--limit N] [--json] past attempts, newest first
   log <name> [attempt] [--follow]    print or tail an attempt log (the latest by default)
   env <name> build|deploy [--set K=V] [--unset K]
   remove <name>                      delete the repo's config file

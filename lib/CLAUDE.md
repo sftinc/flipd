@@ -53,7 +53,7 @@ the never-print rule and the zero-dependency rule bind every file here.
   retry it, so a 500 loses the push. Only signature failures get 401. The one
   `503` is `stopping`: the service is shutting down and the push was discarded,
   which is a failed delivery, not a judged one.
-- **`run.mjs` is 450 lines.** It is one sequence with one failure model; splitting
+- **`run.mjs` is 631 lines.** It is one sequence with one failure model; splitting
   it by phase would spread the state machine across files. Leave it whole.
 - **The hook reads `x-github-event` and `x-hub-signature-256` for every forge.**
   Forgejo, Gitea and Gogs send those GitHub names beside their own, with the

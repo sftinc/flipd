@@ -24,7 +24,8 @@ and live matches the branch head, and non-zero otherwise, so
 catches both a lost webhook and a deploy nobody noticed had failed. To tell
 those apart, use the exit code directly — see `check`'s row in
 [commands.md](commands.md): `0` up to date, `4` behind, `5` a `pending` release
-that was flipped to but never confirmed, `1` a failed row, `3` service down.
+that was flipped to but never confirmed, `6` paused, `1` a failed row, `3`
+service down.
 
 To catch a lost webhook and deploy anyway:
 

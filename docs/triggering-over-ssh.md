@@ -22,6 +22,8 @@ It is the webhook without a payload. Everything the webhook does, it does:
 - **Refused while `pending`** — a release that was flipped to and never
   confirmed blocks it, as it blocks a push. `flipd rollback` or `flipd run`
   by a person is the way out. See [operating.md](operating.md).
+- **Refused while paused** — `flipd pause` blocks it, as it blocks a push;
+  `flipd resume` is the way out.
 - **Skipped when already live** — the branch head is what is deployed, so
   nothing is rebuilt. That is a success.
 - **`WATCH` and `IGNORE` honoured** — that filter is a git diff between the
@@ -66,7 +68,7 @@ Without `--wait`, the webhook's status codes in another form:
 | Exit | Meaning | Webhook equivalent |
 |---|---|---|
 | `0` | accepted: queued, or coalesced into work already accepted | `202` |
-| `1` | refused (`pending`, unreadable `state.json`, or no such repo) or discarded (service stopping) | `200` refused, `503` |
+| `1` | refused (`pending`, `paused`, unreadable `state.json`, or no such repo) or discarded (service stopping) | `200` refused, `503` |
 | `2` | usage | — |
 | `3` | service down or unreachable | — |
 

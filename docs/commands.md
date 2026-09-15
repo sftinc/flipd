@@ -84,15 +84,17 @@ not record a lost delivery) and `flipd trigger` (exit `1`), including a push
 already queued when the pause landed; `run` and `rollback` still work. Both
 commands are idempotent and exit `0`: a second `pause` keeps the first reason
 and says `already paused since …`; `resume` on a repo that is not paused says
-so. `1` no such repo; `2` usage; `3` service down. The reason is cut to 200
-printable characters. `status` shows a `PAUSED` row and `check` exits `6`.
+so. `1` no such repo, or the marker could not be written; `2` usage; `3`
+service down. The reason is cut to 200 printable characters. `status` shows a
+`PAUSED` row and `check` exits `6`.
 
 **`trigger <name> [--wait]`**
 The webhook as a command: refused on `pending`, skipped when the branch head is
 already live, `WATCH` and `IGNORE` honoured, and no `--now` — CI never gets the
 override. Without `--wait`, `0` accepted (queued, or coalesced into work already
-accepted — stdout says which) and `1` refused (`pending`, an unreadable
-`state.json`, or no such repo) or discarded because the service is stopping.
+accepted — stdout says which) and `1` refused (`pending`, `paused`, an
+unreadable `state.json`, or no such repo) or discarded because the service is
+stopping.
 With `--wait` the session holds until the covering attempt settles: `0` for `ok`
 or `skipped`, `1` for a refusal, any other outcome, a crash or a shutdown, and
 `3` if the connection closed unanswered — a restart mid-wait, where the build
