@@ -17,7 +17,7 @@ the never-print rule and the zero-dependency rule bind every file here.
 
 | File | Contract |
 |---|---|
-| `run.mjs` | `runEntry(ctx, entry)` — one attempt, start to finish. Also `runOnFailure`, prune, and the rollback target rule. `ctx.signal` is the attempt's own (`serve.mjs` makes one per entry; reason `'cancel'` → `cancelled`, anything else → `interrupted`), `ctx.shutdown` the service's — prune and `ON_FAILURE` read `shutdown`. `entry.finishing` is set once past `DEPLOY`. Writes a `history.jsonl` row at close and backstops the previous attempt's at step 0, through `log.mjs`. |
+| `run.mjs` | `runEntry(ctx, entry)` — one attempt, start to finish. Also `runOnFailure`, prune, and the rollback target rule. `ctx.signal` is the attempt's own (`serve.mjs` makes one per entry; reason `'cancel'` → `cancelled`, anything else → `interrupted`), `ctx.shutdown` the service's — prune and `ON_FAILURE` read `shutdown`. `entry.finishing` is set once past `DEPLOY` and past the `HEALTHCHECK` wait — a health check is a read, so it stays cancellable. Writes a `history.jsonl` row at close and backstops the previous attempt's at step 0, through `log.mjs`. |
 | `serve.mjs` | `serve({paths, journal})` starts the service; `reconcile()` fixes state left by a crash; `findReposFor()` matches a push — **every** conf on that repository and branch, which is how a monorepo deploys more than one project. The hook server exists only with `PUBLIC_HOST`; `trigger` is the socket-side twin of `onPush`. |
 | `hook.mjs` | `createHookServer(...)`, `verifySignature(...)`, `cleanForLog(value, max)`. `onPush` is handed the whole list of matched confs and answers once for all of them. |
 | `queue.mjs` | `createQueue(runner, {onError})` — serialises work, survives a throwing runner. Every accepted entry carries `settled`, a promise that always resolves (`completed`/`crashed`/`stopping`); `enqueue()` returns `covered`, the promise of whatever unit covers the request — the entry, the duplicate it collapsed into, or the rerun owed after the current run. `trigger --wait` follows it. `cancel(name)` drops that name's queued work and owed rerun and invalidates its rollback reservations (a `{ epoch, count }` per name; a stale `commit()` answers `cancelled`). |
@@ -30,6 +30,7 @@ the never-print rule and the zero-dependency rule bind every file here.
 | `exec.mjs` | `runCommand` for BUILD/DEPLOY, `groupKiller` for SIGTERM-then-SIGKILL of the whole process group. |
 | `log.mjs` | Attempt logs, `events.log` and `history.jsonl` (`appendHistory`/`readHistory`). `appendEvent` **writes raw** by contract — callers sanitise. |
 | `check.mjs` | The worker half of `flipd check`; the CLI half is in `cli/`. The `shares` and `stale` rows need the other confs, so `serve.mjs` passes them in as `others`. |
+| `health.mjs` | `checkHealth(url, {budgetMs, intervalMs, requestMs, signal})` — the `HEALTHCHECK` probe. Resolves on the first `2xx`, retries a refused connection and any other status, rejects at the budget with the last thing it saw, or with the abort reason when `signal` fires. Pure: no paths, no state, no logging. `BUDGET_MS` is the 30s default `run.mjs` caps against `TIMEOUT`. |
 | `glob.mjs`, `owner.mjs` | WATCH/IGNORE matching; chown to the `flipd` user. |
 
 ## Things that look wrong and are not
@@ -53,7 +54,7 @@ the never-print rule and the zero-dependency rule bind every file here.
   retry it, so a 500 loses the push. Only signature failures get 401. The one
   `503` is `stopping`: the service is shutting down and the push was discarded,
   which is a failed delivery, not a judged one.
-- **`run.mjs` is 631 lines.** It is one sequence with one failure model; splitting
+- **`run.mjs` is 665 lines.** It is one sequence with one failure model; splitting
   it by phase would spread the state machine across files. Leave it whole.
 - **The hook reads `x-github-event` and `x-hub-signature-256` for every forge.**
   Forgejo, Gitea and Gogs send those GitHub names beside their own, with the
@@ -68,3 +69,11 @@ all three, plus a decision about whether a failure in it leaves the live release
 intact — which is the property `test/run.test.mjs` exists to pin. STOP (2026-09)
 is the worked example: `phase = 'stop'`, `step('stop')`/`done('stop')`, and a
 failure that leaves live intact because it lands before `flip()`.
+
+`health` (2026-09) is the worked example on the other side of the flip, and the
+second decision it needed was what a failure is *called*: it gets its own
+outcome, `health failed`, because "the restart command is broken" and "the app
+is broken" are different repairs — but it leaves the same `pending` a failed
+`DEPLOY` does, because the consequence for the site is identical. A new outcome
+costs one arm in the `phase → outcome` map here and one in `cli/status.mjs`,
+which shouts it for the same reason it shouts `deploy failed`.

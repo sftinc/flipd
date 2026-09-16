@@ -37,6 +37,9 @@ test('add writes the config with placeholders, generates a key, prints the next 
   assert.equal(kv.get('HOOK_HOST'), 'deploy.example.com');
   assert.match(text, /^#BUILD=/m);
   assert.match(text, /^#STOP=sudo \/usr\/local\/bin\/<your-drain-script>$/m);
+  // Commented out like the rest, but present: a conf that never mentions it is
+  // how the check stays the thing everyone means to add later.
+  assert.match(text, /^#HEALTHCHECK=http:\/\/127\.0\.0\.1:3000\/health$/m);
   await fs.stat(path.join(p.repoDir('r'), 'key'));
   // The single most important property in this task: the private key is
   // never readable by another local user, and neither is the directory

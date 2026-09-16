@@ -18,6 +18,8 @@ test('status: rows, PENDING, stale hook host, service down', async () => {
   await writeRepoConf(p, 'a', { REPO: 'git@github.com:o/a.git', BUILD: 'x', DEPLOY: 'y', HOOK_HOST: 'old.example.com' });
   await writeRepoConf(p, 'b', { REPO: 'git@github.com:o/b.git', BUILD: 'x', DEPLOY: 'y', BRANCH: 'dev' });
   await writeRepoConf(p, 'c', { REPO: 'z', TYPO: '1' });
+  await writeRepoConf(p, 'd', { REPO: 'git@github.com:o/d.git', BUILD: 'x', DEPLOY: 'y' });
+  await writeState(p.repoDir('d'), { ...emptyState(), live: 'r1', releases: { r1: { sha: 'a'.repeat(40) } }, last: { attempt: 't', outcome: 'health failed', finished: '2026-09-16T08:14:02Z', log: '/l' } });
   await writeState(p.repoDir('a'), { ...emptyState(), live: 'r1', pending: 'r2', releases: { r1: { sha: 'a'.repeat(40) }, r2: { sha: 'b'.repeat(40) } }, last: { attempt: 't', outcome: 'deploy failed', finished: '2026-09-05T08:14:02Z', log: '/l' } });
   await fs.mkdir(p.repoDir('b'), { recursive: true });
   await fs.writeFile(path.join(p.repoDir('b'), 'paused'), JSON.stringify({ since: '2026-09-15T10:00:00.000Z', reason: 'incident' }));
@@ -25,6 +27,9 @@ test('status: rows, PENDING, stale hook host, service down', async () => {
   assert.equal(await status([], { paths: p, ...o }), 0);
   const text = o.out();
   assert.match(text, /^a\s+main\s+aaaaaaa\s+DEPLOY FAILED.*service down/m);
+  // `health failed` means the same thing for the site as `deploy failed` —
+  // flipped, unconfirmed, waiting on a person — so it shouts in the same way.
+  assert.match(text, /^d\s+main\s+aaaaaaa\s+HEALTH FAILED/m);
   assert.match(text, /PENDING r2/);
   assert.match(text, /webhook.*old\.example\.com.*new\.example\.com/);
   assert.match(text, /^b\s+dev\s+-\s+never/m);

@@ -75,6 +75,40 @@ test('parseRepo: a REPO carrying credentials is refused, and the refusal never e
   }
 });
 
+test('parseRepo: HEALTHCHECK must be an http(s) URL, and a credential in it is refused without echoing it', () => {
+  const p = paths('/x');
+  const conf = (url) => `REPO=a\nBUILD=b\nDEPLOY=c\nHEALTHCHECK=${url}\n`;
+  // A bare path is the mistake worth catching at config time: flipd knows no
+  // port to resolve it against, so there is nothing to guess and the message
+  // has to say "write the whole URL".
+  for (const bad of ['/health', 'localhost:3000/health', '127.0.0.1:3000/health', 'nonsense']) {
+    assert.throws(() => parseRepo('a', conf(bad), p), (e) => {
+      assert.ok(e instanceof ConfigError, `${bad} must be refused`);
+      assert.match(e.message, /HEALTHCHECK/);
+      return true;
+    });
+  }
+  // Only http and https: the check is an HTTP request, and a scheme flipd
+  // cannot make a request with is a config error, not a runtime surprise.
+  for (const bad of ['ftp://host/health', 'file:///health', 'ssh://host/health']) {
+    assert.throws(() => parseRepo('a', conf(bad), p), (e) => e instanceof ConfigError && /http/.test(e.message));
+  }
+  // The URL reaches the attempt log, so userinfo in it is inside the
+  // never-print rule exactly as REPO's is — same helper, same silence.
+  for (const bad of ['http://user:ghp_TOPSECRETTOKEN@127.0.0.1:3000/health', 'https://ghp_TOPSECRETTOKEN@app.example.com/health']) {
+    assert.throws(() => parseRepo('a', conf(bad), p), (e) => {
+      assert.ok(e instanceof ConfigError, `${bad} must be refused`);
+      assert.match(e.message, /credentials/);
+      assert.ok(!e.message.includes('ghp_TOPSECRETTOKEN'), `the refusal must not echo the credential: ${e.message}`);
+      assert.ok(!e.message.includes(bad));
+      return true;
+    });
+  }
+  for (const good of ['http://127.0.0.1:3000/health', 'https://app.example.com/healthz', 'http://127.0.0.1:8080/', 'http://[::1]:3000/health']) {
+    assert.equal(parseRepo('a', conf(good), p).healthcheck, good);
+  }
+});
+
 test('parseMain: defaults and validation', () => {
   const m = parseMain('WEBHOOK_SECRET=s\n');
   assert.deepEqual(m, { listen: { host: '127.0.0.1', port: 9000 }, publicHost: null, webhookSecret: 's', keep: 5, logKeep: 50, logMaxBytes: 52428800 });
@@ -113,6 +147,8 @@ test('parseRepo: defaults, required keys, name and ROOT rules', () => {
   assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nON_FAILURE=curl x', p).onFailure, 'curl x');
   assert.equal(r.stop, null, 'STOP is optional and null when absent');
   assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nSTOP=sudo /usr/local/bin/drain', p).stop, 'sudo /usr/local/bin/drain');
+  assert.equal(r.healthcheck, null, 'HEALTHCHECK is optional and null when absent');
+  assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nHEALTHCHECK=http://127.0.0.1:3000/health', p).healthcheck, 'http://127.0.0.1:3000/health');
   assert.throws(() => parseRepo('Bad Name', 'REPO=a\nBUILD=b\nDEPLOY=c', p), /name/);
   assert.throws(() => parseRepo('a', 'REPO=a\nBUILD=b', p), /DEPLOY/);
   assert.throws(() => parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nROOT=../x', p), /ROOT/);

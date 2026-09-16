@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import path from 'node:path';
 import { makePrefix, makeSourceRepo, writeRepoConf, tmpdir } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
@@ -1163,4 +1164,138 @@ test('a successful attempt marks its entry finishing; prune still runs after a c
   await assert.rejects(fs.stat(path.join(t.p.repoDir('r'), 'releases', doomed)));
   const admin = path.join(t.p.repoDir('r'), 'git', 'worktrees');
   assert.ok(!(await fs.readdir(admin)).includes(doomed), 'the removal ran to completion: a cancel is not a shutdown');
+});
+
+// A real listener the health phase can talk to, answering from `answer` so a
+// test can make it fail, then come up — which is the case the retry exists for.
+async function healthServer(answer) {
+  const seen = [];
+  const s = http.createServer((req, res) => {
+    seen.push(req.url);
+    const [status, body] = answer(seen.length);
+    res.writeHead(status, { 'content-type': 'text/plain' });
+    res.end(body ?? '');
+  });
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${s.address().port}/health`, seen, close: () => new Promise((r) => s.close(r)) };
+}
+
+// A port with nothing behind it: opened to claim a number, then closed. What an
+// app that never started looks like from the health phase.
+async function deadHealthUrl() {
+  const s = http.createServer(() => {});
+  await new Promise((r) => s.listen(0, '127.0.0.1', r));
+  const { port } = s.address();
+  await new Promise((r) => s.close(r));
+  return `http://127.0.0.1:${port}/health`;
+}
+
+test('HEALTHCHECK that answers 2xx confirms the release', async () => {
+  const h = await healthServer(() => [200, 'ok']);
+  try {
+    const t = await setup({ extra: { HEALTHCHECK: h.url } });
+    assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+    const s = await t.state();
+    assert.equal(s.pending, null);
+    assert.ok(s.releases[s.live].confirmed, 'a release that answered is confirmed');
+    assert.equal(h.seen.length, 1);
+    const log = await fs.readFile(s.last.log, 'utf8');
+    assert.match(log, /step health/);
+    assert.match(log, /outcome: ok/);
+  } finally {
+    await h.close();
+  }
+});
+
+test('HEALTHCHECK that never answers is `health failed`: flipped, pending and unconfirmed', async () => {
+  const url = await deadHealthUrl();
+  const t = await setup({ extra: { HEALTHCHECK: url, TIMEOUT: '2', ON_FAILURE: 'echo "$DEPLOY_OUTCOME"' } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'health failed');
+  const s = await t.state();
+  // The release is flipped and unconfirmed — the same shape a failed DEPLOY
+  // leaves, because it is the same situation: current points at code that has
+  // not been proved, and only a person may decide what happens next.
+  assert.ok(s.pending, 'the flip already happened, so the release is pending');
+  assert.equal(s.live, null, 'nothing was ever confirmed live');
+  assert.equal(await t.current(), s.pending);
+  assert.ok(!s.releases[s.pending].confirmed, 'a release that never answered is not confirmed');
+  assert.equal(s.last.outcome, 'health failed');
+  const log = await fs.readFile(s.last.log, 'utf8');
+  assert.match(log, /outcome: health failed/);
+  assert.match(log, /next: flipd rollback r/, 'the rollback hint is the whole point of not burying it');
+  assert.match(await t.events(), /finished .* health failed /, 'a completed attempt, like a failed DEPLOY — not its own event name');
+  assert.match(await t.events(), /notified .* exit 0  health failed/, 'ON_FAILURE sees DEPLOY_OUTCOME=health failed');
+});
+
+test('HEALTHCHECK retries while the app starts, and confirms once it answers', async () => {
+  const h = await healthServer((n) => (n < 3 ? [503, 'starting'] : [200, 'ok']));
+  try {
+    const t = await setup({ extra: { HEALTHCHECK: h.url, TIMEOUT: '20' } });
+    assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+    assert.equal(h.seen.length, 3, 'it kept trying rather than failing on the first 503');
+    assert.ok((await t.state()).releases[(await t.state()).live].confirmed);
+  } finally {
+    await h.close();
+  }
+});
+
+test('the health budget is capped by TIMEOUT, so a short TIMEOUT is not outlasted by the check', async () => {
+  const url = await deadHealthUrl();
+  const t = await setup({ extra: { HEALTHCHECK: url, TIMEOUT: '1' } });
+  const started = Date.now();
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'health failed');
+  assert.ok(Date.now() - started < 20000, 'the check gave up at TIMEOUT, not at the 30s default');
+});
+
+test('cancel during the health check is `cancelled`, and the release is not finishing until it passes', async () => {
+  const ac = new AbortController();
+  const entry = { kind: 'manual', name: 'r' };
+  // Abort the moment the first health request lands: that proves the attempt
+  // was inside the health loop, not somewhere earlier.
+  const h = await healthServer(() => { ac.abort('cancel'); return [503, 'starting']; });
+  try {
+    const t = await setup({ extra: { HEALTHCHECK: h.url, TIMEOUT: '20' } });
+    t.ctx.signal = ac.signal;
+    assert.equal(await runEntry(t.ctx, entry), 'cancelled');
+    const s = await t.state();
+    assert.equal(s.last.outcome, 'cancelled');
+    assert.ok(s.pending, 'the flip had already happened');
+    assert.ok(!s.releases[s.pending].confirmed, 'a cancelled check confirms nothing');
+    assert.match(await fs.readFile(s.last.log, 'utf8'), /outcome: cancelled  health cancelled/);
+  } finally {
+    await h.close();
+  }
+});
+
+test('a HEALTHCHECK URL is logged without its query, so a token in it never reaches the attempt log', async () => {
+  const h = await healthServer(() => [200, 'ok']);
+  try {
+    const t = await setup({ extra: { HEALTHCHECK: `${h.url}?token=TOPSECRETVALUE` } });
+    assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+    const log = await fs.readFile((await t.state()).last.log, 'utf8');
+    // The conf permits a query (a health endpoint behind a token is ordinary),
+    // and nothing else masks it: MASK_MIN covers env-file values only.
+    assert.doesNotMatch(log, /TOPSECRETVALUE/, 'the query string must not reach the log');
+    assert.match(log, /health: http:\/\/127\.0\.0\.1:\d+\/health/, 'the URL itself is still there to read');
+    assert.equal(h.seen[0], '/health?token=TOPSECRETVALUE', 'the full URL is still what gets requested');
+  } finally {
+    await h.close();
+  }
+});
+
+test('an unexpected failure after the health check is `deploy failed`, not `health failed`', async () => {
+  const h = await healthServer(() => [200, 'ok']);
+  const t = await setup({ extra: { HEALTHCHECK: h.url } });
+  // DEPLOY exits 0 and the app answers; the confirm write then fails because
+  // DEPLOY made the repo directory unwritable. The fault is flipd's own state
+  // write, so it must not be reported as the application failing its check.
+  const dir = t.p.repoDir('r');
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', DEPLOY: `chmod 0555 ${dir}`, HEALTHCHECK: h.url });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  try {
+    assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'deploy failed');
+  } finally {
+    await fs.chmod(dir, 0o755);
+    await h.close();
+  }
 });

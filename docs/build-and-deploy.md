@@ -9,11 +9,13 @@
 - By the time it runs, `current` already points at this release. A `DEPLOY`
   that fails leaves `current` pointing at an unconfirmed release, which is
   what `PENDING` in `flipd status` means.
-- **The exit code is all flipd believes.** Zero confirms the release: it
-  becomes `live`, the old live becomes `previous`. Anything else is
-  `deploy failed`: the repo is `PENDING`, pushes and `flipd trigger` are
-  refused until `flipd rollback <name>` or `flipd run <name>` settles it, and
-  `ON_FAILURE` fires. A warning printed to stderr with exit `0` is a success.
+- **The exit code is all flipd believes**, unless `HEALTHCHECK` is set. Zero
+  confirms the release: it becomes `live`, the old live becomes `previous`.
+  Anything else is `deploy failed`: the repo is `PENDING`, pushes and `flipd
+  trigger` are refused until `flipd rollback <name>` or `flipd run <name>`
+  settles it, and `ON_FAILURE` fires. A warning printed to stderr with exit
+  `0` is a success. With `HEALTHCHECK` set, that zero is necessary and no
+  longer sufficient: the URL must also answer before the release is confirmed.
 - **Rollback runs `DEPLOY` again**, pointed at the old release, with no
   `BUILD`. So the command must work when the release it is handed is older
   than the one currently served, and it must be safe to run twice against the
@@ -86,6 +88,62 @@ Its job is to let the process that is serving now finish what it is doing.
   running now, and an edit applies to the next attempt. A deploy env file
   that fails to parse fails `STOP` the way it fails `DEPLOY`, with the
   outcome `stop failed`.
+
+## HEALTHCHECK
+
+`HEALTHCHECK` is optional, and it is the answer to the one thing an exit code
+cannot tell you: whether the application is actually up. `sudo systemctl
+restart app.service` exits `0` when the unit was accepted, not when the app
+started serving, so a release that crashes on boot is confirmed live by a
+zero that was never about the app at all.
+
+    HEALTHCHECK=http://127.0.0.1:3000/health
+
+When set, flipd requests that URL after `DEPLOY` exits `0` and before the
+release is confirmed.
+
+- **Only `2xx` passes.** A refused connection, a timeout and a `5xx` all mean
+  the same thing — it has not finished starting — and are retried. A `3xx` is
+  reported as the status it is rather than followed: a health endpoint that
+  has started redirecting is a fact about the app, not a route to chase.
+- **The loop is fixed, and there is no second key for it.** The first request
+  goes out immediately, then one a second until a `2xx` answers or the budget
+  runs out. The budget is 30 seconds, or `TIMEOUT` when that is shorter, so no
+  phase can outlast the repo's own limit. Each request gets 3 seconds.
+- **Giving up is `health failed`.** `current` is already flipped by then, so
+  the release stays `pending` and unconfirmed — the same state a failed
+  `DEPLOY` leaves, because it is the same situation: something is serving that
+  has not been proved. Pushes and `flipd trigger` are refused until `flipd
+  rollback <name>` or `flipd run <name>` settles it, and `ON_FAILURE` fires
+  with `DEPLOY_OUTCOME=health failed`.
+- **It runs on rollback too**, like `STOP`, because a rollback is a deploy and
+  confirming one without checking is the thing this key exists to prevent. If
+  the release you rolled back to does not answer either, the rollback ends
+  `health failed` and leaves `pending` set — which is worth knowing, because
+  the alternative is being told the rollback worked while the site is down.
+- **`flipd cancel` still works during the wait.** A health check is a read, so
+  stopping one makes nothing worse, and an attempt is only past the point of
+  cancelling once the check has passed. A service **shutdown** during the wait
+  is different: the attempt ends `interrupted` with the release still
+  `pending`, and the next push is refused until someone settles it. That is
+  deliberate — `DEPLOY` exited `0` but nothing ever proved the app answered,
+  and a release flipd could not verify must not be confirmed by a restart of
+  flipd itself. Restarting the service during a deploy has always been able to
+  leave a repo `pending`; `HEALTHCHECK` widens the window it can happen in, so
+  wait for `flipd status` to be idle before restarting the service.
+- **It must be a full URL.** flipd runs nothing and knows no port, so there is
+  nothing for a bare `/health` to be relative to; a value that is not an
+  `http://` or `https://` URL is refused when the conf is read, as is one
+  carrying `user:password@` or `token@`.
+- **It replaces the `curl` loop in `DEPLOY`, not the thinking behind it.** If
+  the check needs something other than an HTTP request — a TCP port, a
+  `pg_isready` — that still belongs at the end of `DEPLOY`, which is where it
+  has always lived.
+
+An endpoint that returns `200` as long as the process is running is worth more
+than one that checks nothing, and much less than one that touches whatever the
+app needs to actually work — the database handle, the queue connection. The
+check is only as good as what the endpoint asserts.
 
 ## What BUILD, STOP and DEPLOY see
 

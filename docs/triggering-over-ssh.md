@@ -77,7 +77,7 @@ With `--wait`, the session holds until the covering attempt settles, then:
 | Exit | Outcome |
 |---|---|
 | `0` | `ok`, or `skipped` (already live, or nothing under `WATCH` changed) |
-| `1` | `fetch failed`, `checkout failed`, `build failed`, `stop failed`, `deploy failed`, `interrupted`, `config failed`, `refused`, or `cancelled` (the covering attempt was cancelled, or `flipd cancel` dropped this trigger's queued entry); or the trigger was refused before it was even queued; or the service crashed on the attempt; or the service was stopping |
+| `1` | `fetch failed`, `checkout failed`, `build failed`, `stop failed`, `deploy failed`, `health failed`, `interrupted`, `config failed`, `refused`, or `cancelled` (the covering attempt was cancelled, or `flipd cancel` dropped this trigger's queued entry); or the trigger was refused before it was even queued; or the service crashed on the attempt; or the service was stopping |
 | `3` | the connection closed with no answer: the service restarted or died mid-wait |
 
 `skipped` is `0` on purpose: CI must not go red because nothing needed

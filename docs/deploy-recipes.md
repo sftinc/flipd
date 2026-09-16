@@ -14,6 +14,24 @@ The reference for every conf key and every variable is in
 [The repo file](configuration.md#the-repo-file) and
 [What BUILD, STOP and DEPLOY see](build-and-deploy.md#what-build-stop-and-deploy-see).
 
+## Prove it came up
+
+Every recipe below restarts something, and a restart command exits `0` when
+the unit was accepted — not when the app started serving. That zero is what
+confirms a release, so an app that crashes on boot is recorded as live unless
+something checks. Set `HEALTHCHECK` and flipd does the checking:
+
+    HEALTHCHECK=http://127.0.0.1:3000/health
+
+It runs after `DEPLOY` exits `0` and before the release is confirmed, retrying
+for up to 30 seconds while the app starts. Failing it is `health failed`: the
+release stays `pending` and unconfirmed, and says so in `flipd status`. The
+full rules are in [HEALTHCHECK](build-and-deploy.md#healthcheck).
+
+Every recipe here assumes it is set, which is why none of them ends in the
+`curl` loop this used to take. Keep a hand-written check in `DEPLOY` only when
+it is not an HTTP request — a TCP port, a `pg_isready`.
+
 ## Getting root
 
 Most recipes need one privileged step: restart a unit, or write into a
@@ -43,11 +61,11 @@ in the rule instead of writing a script:
 
 ## A systemd service, copied out
 
-The release is copied to a directory the service user can read, the unit is
-restarted, and a health check proves it came up. This is the recipe to start
-from when the app runs as its own user.
+The release is copied to a directory the service user can read and the unit is
+restarted. This is the recipe to start from when the app runs as its own user.
 
     DEPLOY=sudo /usr/local/bin/app-adopt "$DEPLOY_RELEASE_DIR"
+    HEALTHCHECK=http://127.0.0.1:3000/health
 
 `/usr/local/bin/app-adopt`, `root:root`, mode `0755`:
 
@@ -66,14 +84,8 @@ from when the app runs as its own user.
 
     systemctl restart app.service
 
-    # Wait for it, and fail if it does not answer: a restart that crashes
-    # immediately would otherwise exit 0 and be recorded as confirmed.
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-      curl -fsS -m 3 http://127.0.0.1:3000/health >/dev/null 2>&1 && exit 0
-      sleep 1
-    done
-    echo "app did not answer on :3000 within 10s" >&2
-    exit 1
+The script stops at the restart: proving the app answered is `HEALTHCHECK`'s
+job now, and doing it in both places only means two timeouts to keep in step.
 
 On rollback the same script runs with the previous release's path, so the
 copy and restart put the old code back. Use `ROOT` in the `rsync` source if
@@ -83,7 +95,7 @@ the app lives in a subdirectory: `"$rel/mta/"`.
 
 If the service runs as the `flipd` user, it can read the release in place and
 nothing needs copying. Point the unit at `current`, and `DEPLOY` is just the
-restart and the check.
+restart.
 
     [Service]
     User=flipd
@@ -95,7 +107,8 @@ restart and the check.
 `WorkingDirectory` is resolved when the unit starts, so each restart picks up
 whatever `current` points at now. The conf line:
 
-    DEPLOY=sudo systemctl restart app.service && sleep 2 && curl -fsS -m 5 http://127.0.0.1:3000/health >/dev/null
+    DEPLOY=sudo systemctl restart app.service
+    HEALTHCHECK=http://127.0.0.1:3000/health
 
 with the sudoers rule scoped to that one `systemctl` invocation, as in
 [Getting root](#getting-root). No script, no root-owned file to maintain.
@@ -142,7 +155,8 @@ runs as `flipd`, `DEPLOY` needs no privilege:
 the release directory of the *first* start. Pass the path explicitly so each
 release is picked up:
 
-    DEPLOY=pm2 delete app >/dev/null 2>&1; pm2 start "$DEPLOY_RELEASE_DIR/server.mjs" --name app && sleep 2 && curl -fsS -m 5 http://127.0.0.1:3000/health >/dev/null
+    DEPLOY=pm2 delete app >/dev/null 2>&1; pm2 start "$DEPLOY_RELEASE_DIR/server.mjs" --name app
+    HEALTHCHECK=http://127.0.0.1:3000/health
 
 The `pm2` daemon must outlive the attempt. flipd kills the whole process
 group of a `DEPLOY` that times out, so a daemon started *by* `DEPLOY` dies with
@@ -155,7 +169,8 @@ user, before the first deploy.
 `DEPLOY` recreates the container from it.
 
     BUILD=docker compose build
-    DEPLOY=docker compose up -d --no-build && sleep 3 && curl -fsS -m 5 http://127.0.0.1:8080/health >/dev/null
+    DEPLOY=docker compose up -d --no-build
+    HEALTHCHECK=http://127.0.0.1:8080/health
 
 This needs `flipd` in the `docker` group, which is root-equivalent: anyone
 who can run `docker` can mount `/` into a container. It is the same trust as

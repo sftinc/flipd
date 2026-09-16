@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-flipd turns a push into fetch → build → stop → flip → deploy on a server you own.
+flipd turns a push into fetch → build → stop → flip → deploy → health on a server you own.
 Single file per module, Node 20+, ESM, **zero npm dependencies** — keep it that way.
 
 # Rule #1: Keep It Simple, Stupid (KISS)
@@ -104,12 +104,14 @@ same repo can ever interleave:
   its forge is matched by its numeric id instead, scoped to the same host when
   both hosts are known.
 - **`lib/run.mjs`** is the controller and the file to read first. Phases are
-  `fetch → checkout → build → stop → flip → deploy`; a failure before `flip` leaves the
-  live release untouched.
+  `fetch → checkout → build → stop → flip → deploy → health`; a failure before `flip` leaves the
+  live release untouched. `health` runs only with `HEALTHCHECK` set, and is what
+  stands between `DEPLOY` exiting 0 and the release being confirmed.
 
 **The flip is the heart of it.** `current` is a symlink swapped by `rename()` over
 a temp link, so it is atomic. A release becomes `pending` at flip time and only
-becomes `live` when `DEPLOY` exits 0. A `pending` that never confirmed blocks the
+becomes `live` when `DEPLOY` exits 0 and, with `HEALTHCHECK` set, the app
+answers. A `pending` that never confirmed blocks the
 next build from either door — the operator must `flipd rollback` or `flipd run` — because
 silently building over an unconfirmed flip is how a broken deploy gets buried.
 

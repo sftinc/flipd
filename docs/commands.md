@@ -72,12 +72,12 @@ sha prefix, and the live release when nothing is `pending`.
 Stops the repo. A command still running in the attempt — `BUILD`, `STOP`,
 `DEPLOY`, or a git call — is killed as a shutdown would kill it, and the attempt
 ends `cancelled`: before the flip the live release is untouched; during `DEPLOY`
-the release stays `pending`. A command that had already exited keeps its real
+or a `HEALTHCHECK` wait the release stays `pending`. A command that had already exited keeps its real
 outcome, so the reply says a cancel was *requested* — `flipd status <name>` shows
 what happened. Queued pushes, runs and rollbacks for the repo, its owed catch-up
 rerun, and a rollback being accepted are dropped; a `trigger --wait` following
 one of them prints `cancelled` and exits `1`. Once the attempt is past `DEPLOY`
-it is finishing and is not signalled. `ON_FAILURE` runs for `cancelled`. Works
+— and past `HEALTHCHECK` when it is set — it is finishing and is not signalled. `ON_FAILURE` runs for `cancelled`. Works
 even if the repo's conf was removed or broken mid-attempt. `0` a cancel was
 applied or queued work dropped; `1` nothing running or queued, the attempt is
 already finishing with nothing queued, or no such repo; `2` usage; `3` service
