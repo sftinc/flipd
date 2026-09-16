@@ -157,8 +157,8 @@ but they do need your account in the `flipd` group (see
 world-readable, on purpose: `/etc/flipd/repos` (mode `0750`, `root:flipd` —
 `status` and `check` list repos from it), the Unix socket at
 `/run/flipd/flipd.sock` (mode `0660`,
-`flipd:flipd` — the only way to reach `run`, `trigger`, `rollback`, and
-the deploy key `check` needs), and `/var/log/flipd` (mode `0750`, same
+`flipd:flipd` — the only way to reach `run`, `trigger`, `rollback`,
+`cancel`, `pause`, `resume`, and the deploy key `check` needs), and `/var/log/flipd` (mode `0750`, same
 owner — `log` reads from it). Without group membership (and not running as
 root):
 
