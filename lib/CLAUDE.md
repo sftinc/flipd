@@ -28,7 +28,7 @@ the never-print rule and the zero-dependency rule bind every file here.
 | `paths.mjs` | Every path derives from here. `checkName()` is the only guard against `../` in a repo name — never build a repo path by hand. |
 | `git.mjs` | Thin wrappers. `gitOk` throws `GitError`; `redactUserinfo` strips credentials from messages. |
 | `exec.mjs` | `runCommand` for BUILD/DEPLOY, `groupKiller` for SIGTERM-then-SIGKILL of the whole process group. |
-| `log.mjs` | Attempt logs and `events.log`. `appendEvent` **writes raw** by contract — callers sanitise. |
+| `log.mjs` | Attempt logs, `events.log` and `history.jsonl` (`appendHistory`/`readHistory`). `appendEvent` **writes raw** by contract — callers sanitise. |
 | `check.mjs` | The worker half of `flipd check`; the CLI half is in `cli/`. The `shares` and `stale` rows need the other confs, so `serve.mjs` passes them in as `others`. |
 | `glob.mjs`, `owner.mjs` | WATCH/IGNORE matching; chown to the `flipd` user. |
 

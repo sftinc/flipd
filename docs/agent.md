@@ -38,9 +38,11 @@ a person settles it.
 | Deploy several projects from one repository | A monorepo: one repo file per project, one webhook for the lot. | [Deploy several projects from one repository](#deploy-several-projects-from-one-repository) |
 | Trigger over SSH instead of a webhook | A box with no HTTP door: a forced-command key and `flipd trigger`, not `install.sh --host`. | [Trigger over SSH instead of a webhook](#trigger-over-ssh-instead-of-a-webhook) |
 | Change a build or deploy command | One conf file, re-read on the next event. No restart. | [Change `BUILD` or `DEPLOY`](#change-build-or-deploy) |
-| Find out whether it is working | `check`, `status`, `log`. Nothing here writes. | [Verify](#verify) |
+| Find out whether it is working | `check`, `status`, `history`, `log`. Nothing here writes. | [Verify](#verify) |
 | Work out why a push did not deploy | Caddy's journal, the attempt log, an exit code. Also safe. | [When it goes wrong](#when-it-goes-wrong) |
 | Settle a failed deploy, or go back a release | A `pending` release refuses every push and every `flipd trigger` until someone settles it. | [Settle a failed deploy, or roll back on purpose](#settle-a-failed-deploy-or-roll-back-on-purpose) |
+| Freeze deploys during an incident | `flipd pause` refuses pushes and triggers until `flipd resume`; `run` and `rollback` still work. | [operating.md](operating.md) |
+| Stop a hung build | `flipd cancel` frees the single worker so every other repo isn't stuck behind it. | [operating.md](operating.md) |
 | Upgrade flipd | `git pull` and restart — only while nothing is building. | [Upgrade flipd](#upgrade-flipd) |
 | Rotate a forge token | The token never reaches you, this time either. | [Rotate or remove a forge token](#rotate-or-remove-a-forge-token) |
 | Change a secret the build or deploy uses | `flipd env`, never the conf line. | [Change a secret the build or deploy uses](#change-a-secret-the-build-or-deploy-uses) |
@@ -60,7 +62,7 @@ Four things worth knowing before you plan anything. None of them writes:
     ls /opt/flipd                 # is flipd installed at all
     systemctl is-active flipd     # is the service up
     flipd status                  # every repo it knows: live, pending, running
-    flipd check <name>            # 0 up to date, 4 behind, 5 pending, 1 broken, 3 service down
+    flipd check <name>            # 0 up to date, 4 behind, 5 pending, 6 paused, 1 broken, 3 service down
 
 What they tell you:
 
@@ -180,8 +182,8 @@ Then the run order. Each step says whether it can be undone.
    everything else still happens and the Caddy block is printed to paste.
 3. **Add the operator to the group** (reversible). The installer prints
    `sudo usermod -aG flipd <you>`. Run it, then start a fresh login shell — the
-   group is what lets `status`, `check`, `run`, `rollback` and `log` work
-   without `sudo`.
+   group is what lets `status`, `check`, `run`, `trigger`, `rollback`,
+   `history`, `log`, `pause`, `resume` and `cancel` work without `sudo`.
 4. **Add a forge account** (**gate** — see the token rule above), if they want
    automatic setup. **Ask; do not assume they need one.** For a single repo,
    creating a scoped token is usually more work than pasting a deploy key once,
@@ -317,6 +319,11 @@ buries the failure instead of resolving it. Read the attempt log before you
 roll back, and tell the operator what it said: a `pending` is a deploy that
 went wrong, and clearing it without knowing why only postpones the next one.
 
+To go back further than `previous`, `flipd rollback <name> --to <release-id>`
+names any kept release that once deployed successfully; `flipd history <name>
+--json` has the id in its `release` field. `--now` skips `STOP` for that one
+attempt.
+
 ### Upgrade flipd
 
     flipd status                                  # every repo must be idle first
@@ -370,7 +377,9 @@ after a crash or a reboot. At startup it reconciles: an attempt that was
 in-flight is recorded as `interrupted`, release directories no state knows about
 are removed, and an unconfirmed `pending` is reported in the journal. **A
 `pending` survives a restart and still refuses pushes and triggers** — a reboot does
-not clear one, so settle it with a rollback.
+not clear one, so settle it with a rollback. A `paused` marker is a file too, so
+it survives the same way: pushes and triggers stay refused until `flipd resume`,
+restart or no.
 
 ### Set up monitoring
 
@@ -385,15 +394,17 @@ never on `5`:
     flipd check <name> >/dev/null; [ $? -eq 4 ] && flipd run <name>
 
 `5` outranks `4`, so a repo that is both behind and pending stays put until a
-human looks at it. That is deliberate. See [operating.md](operating.md).
+human looks at it. `6` (paused) outranks `4` too, for the same reason: this
+line must never turn a deliberate pause into a build. That is deliberate. See
+[operating.md](operating.md).
 
 ## Verify
 
 Whatever the job was, this is how you find out it worked. In this order; stop at
 the first one that fails and read the log.
 
-    flipd check <name>      # 0 up to date, 4 behind, 5 pending, 1 broken, 3 service down
-    flipd status
+    flipd check <name>      # 0 up to date, 4 behind, 5 pending, 6 paused, 1 broken, 3 service down
+    flipd status --json     # or flipd status; --json is the form to script against
     flipd run <name>        # build now, on demand
     flipd log <name> --follow
 
@@ -401,6 +412,8 @@ the first one that fails and read the log.
 how you confirm the Payload URL the operator should see on their forge. After a
 first setup, have them push a real commit and confirm a build starts — a webhook
 that was never created looks exactly like one that works until someone pushes.
+Prefer `--json` on `status` and `history` over parsing the printed tables when
+you are scripting a check rather than reading it yourself.
 
 ## When it goes wrong
 
@@ -419,6 +432,9 @@ that was never created looks exactly like one that works until someone pushes.
 - **`checkout failed` on a repo with submodules.** A deploy key works for one
   repository only. A repo whose submodule is a second private repository needs
   `--key` with a machine user's key that can read both.
+- **A build hangs and holds the single worker**, so every other repo waits
+  behind it. `flipd cancel <name>`, then `flipd status <name>` for what
+  actually happened — a cancel during `DEPLOY` leaves the release `pending`.
 - **Anything else** — `journalctl -u flipd` and
   `/var/log/flipd/<name>/events.log`, one line per attempt.
 

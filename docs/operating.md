@@ -8,9 +8,12 @@
     flipd rollback app     # back to the last confirmed release
     sudo flipd env app build --set NPM_TOKEN=...
 
-To go further back than the previous release, find it and name it:
+To go further back than the previous release, find its id and name it. The
+history table's `RELEASE` column holds the role (`live`, `previous`,
+`pending`), not the id — read the id from `--json`'s `release` field, or build
+it from the table as `ATTEMPT` plus `-` plus `SHA`:
 
-    flipd history app
+    flipd history app --json
     flipd rollback app --to 2026-09-14T16-01-20Z-1a2b3c4
 
 Only a release that deployed successfully at least once can be named, and only

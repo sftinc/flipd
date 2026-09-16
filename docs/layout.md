@@ -21,7 +21,7 @@ gets its own clone, releases, state and logs below. For a repo named `app`:
 | `/var/lib/flipd/app/paused` | present while `flipd pause` is in effect: one JSON line, `since` and `reason`. A marker that cannot be read counts as paused |
 | `/var/log/flipd/app/<id>.log` | one attempt log per build or rollback |
 | `/var/log/flipd/app/history.jsonl` | one JSON line per attempt, as `state.json`'s `last` was when it closed; trimmed to `LOG_KEEP` lines (all of them at `0`). Read by `flipd history`. Attempts before this file existed are not in it |
-| `/var/log/flipd/app/events.log` | one line per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries the delivery id, so a delivery that matched a repo can be found here with `grep`; one that was ignored (a tag, a deleted branch, no matching repo) carries it in `journalctl -u flipd` instead |
+| `/var/log/flipd/app/events.log` | one line per event — `webhook`, `queued`, `started`, `refused`, `renamed`, `notified`, `paused`, `resumed` and `cancel` among them, not just one per attempt; never pruned by flipd (logrotate keeps twelve months). The `webhook` line carries the delivery id, so a delivery that matched a repo can be found here with `grep`; one that was ignored (a tag, a deleted branch, no matching repo) carries it in `journalctl -u flipd` instead |
 
 flipd writes nowhere else. Getting the release to wherever it is served from
 is `DEPLOY`'s job: see [deploy-recipes.md](deploy-recipes.md).

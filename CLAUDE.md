@@ -31,7 +31,7 @@ everywhere.
 | `install.sh`                    | Root-only installer. See the rule below — **never run it.**                                                                                                                                                                                                                                                                  |
 | `flipd.service`                 | The systemd unit the installer writes to `/etc/systemd/system/`. `KillMode=mixed` is load-bearing: `SIGTERM` reaches flipd only, so `run.mjs` kills the build's own process group and records `interrupted` rather than being killed alongside it. `RuntimeDirectory=flipd` is what creates `/run/flipd` for the CLI socket. |
 | `flipd.logrotate`               | The `/etc/logrotate.d/flipd` policy for every repo's `events.log` — monthly, twelve kept. `create 0640 flipd flipd` is the line that keeps the service able to append after a rotation.                                                                                                                                      |
-| `docs/`                         | One file per reader question — the agent entry point, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here.                                                |
+| `docs/`                         | One file per reader question — the agent entry point, install, adding a repo, accounts, configuration, build-and-deploy, commands, operating, triggering over SSH, layout, deploy recipes, serving with Caddy. Indexed by the README, which is the only index. Tracked; nothing scratch goes here.                                                |
 | `todo/`                         | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md).                                                                                                                                                                                                                                    |
 | `SERVER.md`                     | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up.                                                                                                                                                                                                 |
 | `SERVER.example.md`             | The shape `SERVER.md` follows, and what [`docs/agent.md`](docs/agent.md) hands an agent for an operator's own box. Tracked, so it carries placeholders and rules and never a real address.                                                                                                                                   |
@@ -114,9 +114,12 @@ next build from either door — the operator must `flipd rollback` or `flipd run
 silently building over an unconfirmed flip is how a broken deploy gets buried.
 
 **State** (`lib/state.mjs`) is one `state.json` per repo holding `live`,
-`previous`, `pending`, `github_id` and the releases map. An unreadable one is a
-typed `StateError`, never degraded to an empty state: empty means "no releases",
-which would make the next prune delete everything.
+`previous`, `pending`, `last`, `github_id` and the releases map. Each release
+entry gets a `confirmed` stamp once its `DEPLOY` has succeeded — the field
+`rollback --to` keys on to tell a release that once worked from one that
+never did. An unreadable `state.json` is a typed `StateError`, never degraded
+to an empty state: empty means "no releases", which would make the next
+prune delete everything.
 
 ## Servers
 

@@ -42,7 +42,9 @@ nothing wrong, just not deployed yet. `5` pass, but a release is `pending`,
 flipped to and never confirmed; it outranks `4`. `6` pass, but the repo is
 paused; `5` outranks it and it outranks `4`, so the cron catch-up never
 force-builds a paused repo. `1` a row failed: config, key
-or clone. Two rows worth knowing: `shares`, the other repo files a push to this
+or clone — also the service refusing because the worker is busy
+(`busy: running <name>, N queued`), since `check` runs on the worker and does
+not queue behind other work. Two rows worth knowing: `shares`, the other repo files a push to this
 repository also builds, and `stale`, a repo file holding this repository's forge
 id under a different `REPO` — a rename applied to one and not the other. It also
 reprints the setup recipe: the webhook one when the conf has `PUBLIC_HOST`
@@ -51,17 +53,20 @@ when it does not.
 
 **`run <name> [--now]`** and **`rollback <name> [--to <release-id|sha>] [--now]`**
 `0` the request was handled — stdout says `queued <name>` (or
-`queued rollback of <name> to <sha>`) or `not queued: <reason>` when a build for
-it is already running or queued, or the service is shutting down. `1` the
-service refused it, which means a config error. `--now` skips `STOP` for that
-one attempt.
+`queued rollback of <name> to <release-id>`) or `not queued: <reason>` when a
+build for it is already running or queued, or the service is shutting down. `1`
+the service refused it, which means a config error. `--now` skips `STOP` for
+that one attempt.
 
 `--to` rolls back to any kept release that was confirmed live at least once,
-named by its release id (from `flipd history`) or by a sha of 7 or more hex
-characters — the newest confirmed release built from that commit. It is refused,
-exit `1`, for a release that never deployed (a failed build or deploy), one no
-longer kept (the refusal lists the ones that are), an ambiguous sha prefix, and
-the live release when nothing is `pending`.
+named by its release id or by a sha of 7 to 40 hex characters — the newest
+confirmed release built from that commit; anything else is a usage error, exit
+`2`. The id is the `release` field from `flipd history --json`, or the table
+form's `ATTEMPT` column plus `-` plus its `SHA` column — the table's own
+`RELEASE` column holds the role (`live`, `previous` or `pending`), not the id.
+It is refused, exit `1`, for a release that never deployed (a failed build or
+deploy), one no longer kept (the refusal lists the ones that are), an ambiguous
+sha prefix, and the live release when nothing is `pending`.
 
 **`cancel <name>`**
 Stops the repo. A command still running in the attempt — `BUILD`, `STOP`,
@@ -108,9 +113,11 @@ are not in the `flipd` group. `2` usage. `--json` prints
 `{ "service": "up"|"down", "repos": [...] }`, one object per repo with `name`,
 `branch`, `activity` (`running`, `queued`, `idle`, or `null` when the service is
 down), `live`, `previous` and `pending` (each `{ release, sha }` or `null`, shas
-in full), `last` as recorded, `warnings`, and `error` — set, with the state
-fields `null`, for a conf that will not load or a `state.json` that cannot be
-read, so a script never loses a repo from the list.
+in full), `paused` (`{ since, reason }` or `null`; a marker that cannot be read
+reads `{ since: null, reason: '(marker unreadable)' }`), `last` as recorded,
+`warnings`, and `error` — set, with the state fields `null`, for a conf that
+will not load or a `state.json` that cannot be read, so a script never loses a
+repo from the list. The table form shows a `PAUSED` row instead.
 
 **`history <name> [--limit N] [--json]`**
 Newest first, 20 by default: attempt id, trigger, sha, outcome, duration, and
@@ -120,7 +127,7 @@ shown first when a release holds two). An attempt not yet closed reads
 `history.jsonl` and `state.json`, so it works with the service down. `0`
 printed; `1` no history; `2` usage.
 
-**`log <name> [attempt] [--follow]`**
+**`log <name> [attempt] [--follow|-f]`**
 `0` printed, or tailing until you stop it. `1` no logs, no log for that attempt
 (pruned, or never existed), or a read error. `2` usage, including an attempt that
 is not an attempt id.
@@ -155,9 +162,11 @@ the deploy key `check` needs), and `/var/log/flipd` (mode `0750`, same
 owner — `log` reads from it). Without group membership (and not running as
 root):
 
-- `check`, `run`, `trigger`, `rollback` and `log` report `service down` from
-  the unreachable socket or an unreadable log directory, indistinguishable
-  from the service actually being down;
+- `check`, `run`, `trigger`, `rollback`, `cancel`, `pause` and `resume` report
+  `service down` from the unreachable socket, indistinguishable from the
+  service actually being down; `log` reports it from an unreadable log
+  directory instead, and `history` fails the same way `log` does — it reads
+  `history.jsonl` and `state.json` directly rather than the socket;
 - `status` fails outright with a bare `EACCES: permission denied, scandir
   '/etc/flipd/repos'` (exit `1`), since it cannot even list the
   configured repos.

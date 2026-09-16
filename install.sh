@@ -193,7 +193,7 @@ install -m 0644 "$HERE/flipd.logrotate" /etc/logrotate.d/flipd
 ADMIN_USER="${SUDO_USER:-<your-user>}"
 cat <<EOF
 
-so your own login can run 'status', 'check', 'run', 'rollback' and 'log' without sudo:
+so your own login can run 'status', 'check', 'run', 'trigger', 'rollback', 'history', 'log', 'pause', 'resume' and 'cancel' without sudo:
   sudo usermod -aG flipd $ADMIN_USER
 this takes effect on your next login (or run 'newgrp flipd' in the current shell).
 EOF
