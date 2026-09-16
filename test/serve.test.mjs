@@ -20,7 +20,11 @@ function getFreePort() {
   });
 }
 
-async function waitFor(fn, ms = 10000) {
+// 30s, not 10: these tests wait on real git clones, worktrees and spawned
+// shells, and `npm test` runs every file at once. A condition poll exits the
+// moment the condition holds, so a wide budget costs nothing on an idle machine
+// and is the difference between a pass and a spurious failure on a loaded one.
+async function waitFor(fn, ms = 30000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     if (await fn()) return;
@@ -1247,18 +1251,27 @@ test('cancel on a finishing attempt with nothing queued says so and changes noth
   const src = await makeSourceRepo();
   await src.commit({ a: '1' });
   const marker = path.join(p.repoDir('r'), 'notifying');
-  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'exit 1', ON_FAILURE: `touch ${marker}; sleep 2` });
+  // ON_FAILURE holds the attempt in its finishing window until the test says
+  // go, rather than for a fixed two seconds: the assertions below have to land
+  // inside that window, and a wall-clock one closes early on a loaded machine.
+  // The 600-iteration cap is the backstop, so a test that never releases it
+  // fails on its own wait rather than hanging the suite.
+  const go = path.join(p.repoDir('r'), 'go');
+  const hold = `touch ${marker}; i=0; while [ ! -e ${go} ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done`;
+  await writeRepoConf(p, 'r', { REPO: src.url, BUILD: 'true', DEPLOY: 'exit 1', ON_FAILURE: hold });
   const lines = [];
   const svc = await serve({ paths: p, journal: (l) => lines.push(l) });
   try {
     await sendCommand(p.sock, { cmd: 'run', name: 'r' });
     await waitFor(async () => fs.stat(marker).then(() => true, () => false));
     assert.deepEqual(await sendCommand(p.sock, { cmd: 'cancel', name: 'r' }), { ok: false, error: 'attempt already finishing; nothing queued' });
+    await fs.writeFile(go, '');
     await waitIdle(p);
     assert.equal((await readState(p.repoDir('r'))).last.outcome, 'deploy failed', 'the real outcome, not cancelled');
 
     // Now with queued work dropped behind a finishing attempt, and events.log unwritable.
     await fs.rm(marker);
+    await fs.rm(go);
     await sendCommand(p.sock, { cmd: 'run', name: 'r' });
     await waitFor(async () => fs.stat(marker).then(() => true, () => false));
     await sendCommand(p.sock, { cmd: 'run', name: 'r' });
@@ -1268,6 +1281,7 @@ test('cancel on a finishing attempt with nothing queued says so and changes noth
     assert.deepEqual(await sendCommand(p.sock, { cmd: 'cancel', name: 'r' }), { ok: true, signalled: false, kind: 'manual', dropped: 1 });
     assert.ok(lines.some((l) => /cancel requested: attempt already finishing, 1 queued dropped/.test(l)));
     assert.ok(lines.some((l) => /could not record the cancel event/.test(l)));
+    await fs.writeFile(go, '');
     await waitIdle(p);
   } finally {
     await svc.close();
