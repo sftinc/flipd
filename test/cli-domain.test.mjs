@@ -3,9 +3,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { renderSite, MARKER, takeLock, releaseLock, checkTarget, checkHostArg } from '../lib/cli/domain.mjs';
 import domain from '../lib/cli/domain.mjs';
 import { paths } from '../lib/paths.mjs';
+
+const runReal = promisify(execFile);
+// Worked out once at module load, not inside the test body, so `skip` gets a
+// plain boolean/string rather than a promise.
+const caddyOnPath = await runReal('sh', ['-c', 'command -v caddy || true'])
+  .then(({ stdout }) => Boolean(stdout.trim()))
+  .catch(() => false);
 
 async function tmpdir() {
   return await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-domain-'));
@@ -430,4 +439,29 @@ test('the source never lets writeAtomic touch the Caddyfile', async () => {
   const src = await fs.readFile(new URL('../lib/cli/domain.mjs', import.meta.url), 'utf8');
   const bad = src.split('\n').filter((l) => l.includes('writeAtomic') && l.includes('caddyMain'));
   assert.deepEqual(bad, []);
+});
+
+// The one test in this file that runs the real caddy. It pins the fact the
+// bootstrap's design rests on: a failed `domain add` may leave behind a
+// conf.d it created and the import line pointing at it, and that empty
+// directory must not stop caddy loading its own config. An override cannot
+// establish this — it can only record what would have been run, never what
+// caddy actually does with it.
+//
+// SKIPPING THIS TEST IS NOT PASSING IT. A skip means the environment has no
+// caddy to check against, so the empty-import-glob claim above is simply
+// unverified here — not confirmed. A green suite on a laptop without caddy
+// proves nothing about this specific behaviour; only a run where this test
+// actually executes (e.g. CI, with caddy on PATH) does.
+test('an import glob that matches no files is not an error to caddy', { skip: !caddyOnPath && 'caddy is not installed (not on PATH)' }, async () => {
+  const dir = await tmpdir();
+  const confd = path.join(dir, 'conf.d');
+  await fs.mkdir(confd);
+  const main = path.join(dir, 'Caddyfile');
+  // Binds nothing meaningful — caddy validate parses and adapts the config,
+  // it does not start a server or bind a port.
+  await fs.writeFile(main, `localhost:8080 {\n    respond 200\n}\n\nimport ${confd}/*\n`);
+  // Asserts the exit status, not the warning text: the status is the
+  // interface flipd's rollback design depends on, the wording is not.
+  await runReal('caddy', ['validate', '--config', main]);
 });
