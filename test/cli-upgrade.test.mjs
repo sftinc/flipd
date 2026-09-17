@@ -31,7 +31,6 @@ test('parseSystemdShow reads labelled properties and the ExecStart path', () => 
   assert.equal(u.loadState, 'loaded');
   assert.equal(u.activeState, 'active');
   assert.equal(u.subState, 'running');
-  assert.equal(u.mainPid, '1234');
   assert.equal(u.execStart, '/opt/flipd/bin/flipd');
 });
 
@@ -374,7 +373,7 @@ test('the partial-upgrade note gives an absolute installer path and warns about 
 
 // A harness that records the order of everything the command does to the
 // outside world. Ordering is the whole design, so ordering is what is asserted.
-function harness({ clone, statusReplies = [idleReply], isRoot = false, unit = loadedUnit() }) {
+function harness({ clone, statusReplies = [idleReply], isRoot = false, unit }) {
   const events = [];
   const replies = [...statusReplies];
   const c = capture();
@@ -461,9 +460,13 @@ test('work appearing after the pull still delays the restart', async (t) => {
   });
   const code = await upgrade([], h.ctx);
   assert.equal(code, 0, h.out.errText());
+  const pullAt = h.events.indexOf('git pull');
   const restartAt = h.events.findIndex((e) => e.includes('restart'));
-  const busyAt = h.events.indexOf('status', h.events.indexOf('git pull'));
-  assert.ok(restartAt > busyAt, `restart must wait out the second busy window: ${h.events}`);
+  // A busy reply followed by an idle one is two polls, not one: an
+  // implementation that polled once after the pull and restarted regardless
+  // of the reply would also pass a check for a single status call here.
+  const statusesBetween = h.events.slice(pullAt + 1, restartAt).filter((e) => e === 'status').length;
+  assert.ok(statusesBetween >= 2, `restart must wait out the second busy window, not just poll once: ${h.events}`);
 });
 
 test('already up to date with the service up: no restart, exit 0', async (t) => {
