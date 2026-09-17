@@ -1,19 +1,60 @@
 # Serving the repo through Caddy
 
 The recipes in [deploy-recipes.md](deploy-recipes.md) put the release where
-something can serve it. This is the other half: the Caddy site block that makes
-it reachable from outside. Nothing here runs at deploy time — but
-`install.sh --host` already put Caddy on the box for the webhook, and the same
-Caddy can serve the app.
+something can serve it. This is the other half: a hostname that reaches it
+from outside. `install.sh --host` already put Caddy on the box for the
+webhook, and `flipd domain` puts a repo on the same Caddy.
 
-## A separate hostname, in its own file
+## `flipd domain add`
 
-`install.sh --host` writes one file, `/etc/caddy/conf.d/flipd.caddy`, and
-appends `import /etc/caddy/conf.d/*` to `/etc/caddy/Caddyfile` if it is not
-already there. That import is the whole mechanism: any other file in
-`conf.d/` is read on the next reload.
+    flipd domain add app app.example.com --port 3000
+    flipd domain add app app.example.com --root /var/www/app.example.com
+    flipd domain add app app.example.com --root /var/www/app.example.com --spa
 
-Two things not to do.
+Each writes one file, `/etc/caddy/conf.d/flipd-app.caddy`, marked on its
+first line as managed by flipd, then runs `caddy validate` over the whole
+imported set and reloads. `--port` renders a `reverse_proxy` to that loopback
+port; `--root` renders a `file_server` over that directory instead — this is
+`DOMAIN_ROOT` in the repo conf, a path on the box that Caddy reads, and *not*
+`ROOT`, which is the directory inside the checkout that `BUILD` and `DEPLOY`
+run in ([configuration.md](configuration.md)). `--spa` adds
+`try_files {path} /index.html` on top of `--root`, so a single-page app's
+router gets the shell for a path that is not a real file. `--port` and
+`--root` are mutually exclusive — one site block has one upstream — and
+`--spa` needs `--root`. Give more than one hostname and they land in the same
+block. Run `add` again on the same name to add another hostname; pass
+`--port` or `--root` again (with `--spa` if wanted) to change the target —
+leaving both off keeps whatever is already there.
+
+The first `flipd domain add` on a box that already ran `install.sh --host`
+needs nothing else: the `import /etc/caddy/conf.d/*` that picks up every file
+written there is already in `/etc/caddy/Caddyfile`. Without it, `add` appends
+that import line and creates `conf.d/` itself — but only when the directory
+is otherwise empty; if it already holds files nothing imports, `add` stops,
+names how many, and asks you to look at them and add the import by hand
+rather than publish whatever is parked there. If Caddy is not installed at
+all, it says so and points at `install.sh --host`.
+
+`add` refuses to overwrite a file it did not write: the first line has to
+read `# managed by flipd`, or it names the file and asks you to move it aside
+first. It also refuses the webhook's own hostname and a hostname already
+serving another repo — the same `ambiguous site definition` trap the
+hand-written path below has to avoid on its own.
+
+`flipd domain remove <name> [<host>...]` drops one hostname, or with none
+named, all of them and the site file along with them — which is also what
+`flipd remove <name>` now does on its way out, so removing a repo no longer
+leaves its site block behind. `flipd domain list [name]` prints what is
+configured, one row per repo that has a hostname; it only reads, so it needs
+no `sudo` and never touches Caddy. Flags and exit codes for all three:
+[commands.md](commands.md).
+
+## Writing the site file by hand
+
+`--port` and `--root` cover a reverse proxy and a static directory, each with
+or without SPA fallback. Anything past that shape — more than one upstream,
+path-based routing, custom headers, a redirect — is a file `flipd domain`
+does not generate, so write it yourself. Two things not to do.
 
 Do not add the site to `flipd.caddy`. The next `install.sh --host` overwrites
 that file, and the site disappears at the moment an upgrade is the thing being
@@ -52,15 +93,15 @@ whatever the name points at. Then:
 `caddy validate` parses the whole imported set and catches the address
 collision above, which is the one mistake that is otherwise invisible until a
 restart. It does not prove the site serves anything; the check for that is a
-request.
-
-`flipd remove <name>` knows nothing about this file. Removing a repo leaves
-its site block behind, still answering, pointed at a directory or a port that
-is now empty.
+request. A file written this way — first line anything other than
+`# managed by flipd` — is one `flipd domain` will never touch: it is left
+alone on every `add`, `remove` and `list`, and `flipd remove` for the same
+repo name leaves it in place too.
 
 ## Reverse proxy to the app
 
-The block above, paired with either systemd recipe — [copied
+Either `flipd domain add <name> <host> --port N` or the block above, paired
+with either systemd recipe — [copied
 out](deploy-recipes.md#a-systemd-service-copied-out) or [running as
 flipd](deploy-recipes.md#a-systemd-service-that-runs-as-flipd). Caddy does not read the release
 at all, so nothing about `/var/lib/flipd`'s ownership matters here. This is the
@@ -78,7 +119,9 @@ or on the previous release still holding the port.
 
 Paired with [A static site](deploy-recipes.md#a-static-site). `root` names the directory that
 recipe's `DEPLOY` rsyncs into — the two have to be the same path — and Caddy
-serves it as an ordinary directory, never looking at `/var/lib/flipd`:
+serves it as an ordinary directory, never looking at `/var/lib/flipd`.
+`flipd domain add <name> <host> --root /var/www/app.example.com` writes this
+shape (add `--spa` for a single-page app); by hand it is:
 
     app.example.com {
         log {
@@ -136,7 +179,10 @@ tree, which is where a bundled `.env` or a baked-in key would be. It does not
 gain the deploy key, which `flipd add` writes at mode `0600`, and it does not
 gain the env files or the repo conf, which live under `/etc/flipd` and are
 `0640 root:flipd`. Whether that trade is worth skipping an rsync depends on
-what the build puts in `dist/`.
+what the build puts in `dist/`. `flipd domain add` will not grant these ACLs
+for you — it has no reason to know a build ever writes a secret into `dist/`
+— so this path stays something an operator sets up deliberately with `--root`
+pointed at `current`, once they have granted the access above themselves.
 
 ## The webhook's connection cap is not involved
 

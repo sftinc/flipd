@@ -19,7 +19,9 @@ usage error; exit `3` is always the service being down or unreachable.
 | `flipd history <name>` | group | past attempts, newest first |
 | `flipd log <name> [attempt]` | group | an attempt log, the latest by default |
 | `flipd env <name> build\|deploy` | sudo | extra environment for `BUILD` or `DEPLOY` |
-| `flipd remove <name>` | sudo | deletes the conf file, keeps state and logs |
+| `flipd domain add\|remove <name>` | sudo | the repo's Caddy site block: hostnames, and the port or directory behind them |
+| `flipd domain list [name]` | group | one row per repo that has a hostname |
+| `flipd remove <name>` | sudo | deletes the conf file and its Caddy site block, if any; keeps state and logs |
 
 "group" means your account is in the `flipd` group, or you are root. See
 [Permissions](#permissions).
@@ -137,25 +139,53 @@ is not an attempt id.
 non-zero. With neither `--set` nor `--unset` it opens the file in `$EDITOR`
 (default `vi`) and re-validates on save.
 
+**`domain add <name> <host>... [--port N | --root DIR] [--spa]`**, **`domain remove <name> [<host>...]`**, **`domain list [name]`**
+`0` written, or (`list`) printed. `1` a refusal or a caddy failure: no repo
+by that name, its conf will not parse (the message names the conf and the
+line), the site file at `/etc/caddy/conf.d/flipd-<name>.caddy` exists and was
+not written by flipd (move it aside first), a hostname is the webhook's own
+or already serves another repo, caddy is not installed, `conf.d` holds files
+nothing imports, `caddy validate` rejected the result, or `systemctl reload`
+failed. `2` a usage or validation error: a bad verb, a missing name, `--port`
+and `--root` together, `--spa` without `--root`, a `--port` outside 1–65535,
+a `--root` that is not an absolute path, a host that is not a DNS name, or
+`add` with no hostname and no `--port`/`--root` to give a repo that has
+neither yet. `add` and `remove` write the repo conf's `DOMAIN*` keys, then
+render, validate and reload the site file — on a caddy failure both are
+rolled back to what they held before the call, and the message says so (or
+names what could not be restored). Both hold a lock at
+`/etc/flipd/domain.lock` for the whole call and refuse, exit `1`, while
+another `domain add`/`remove` or a `flipd remove` holds it, naming the
+holding pid and how long it has been held. `list` reads the repo confs only
+— it takes no lock, needs no caddy, and needs no `sudo` — and marks a row
+`no site file` when the conf claims a hostname the rendered file does not
+back.
+
 **`remove <name>`**
 `0` the conf file is gone; state, logs and env files are kept, and the command
-prints the `rm` lines for all three. `1` no such repo, or it is running or
-queued.
+prints the `rm` lines for all three. If the repo had a Caddy site file, it is
+deleted, validated and reloaded away too, reported on its own line; a caddy
+failure at that point still returns `1`, since the site file is gone but the
+running config is not. `1` no such repo, it is running or queued, or the
+site cleanup's caddy call failed.
 
 flipd never prints a `WEBHOOK_SECRET`, a private key, or any env-file value —
 only key names.
 
 ## Permissions
 
-`/etc/flipd` is root-owned, so **`add`, `env`, `remove` and `account` need
-`sudo`** — the account conf is root-only because it holds a token that can
-create webhooks.
+`/etc/flipd` is root-owned, so **`add`, `env`, `remove`, `account` and
+`domain add`/`domain remove` need `sudo`** — the account conf is root-only
+because it holds a token that can create webhooks, and a repo conf's
+`DOMAIN*` keys and `/etc/caddy/conf.d` are both root-only for the same reason
+everything else under `/etc/flipd` is. `domain list` only reads, and needs
+no `sudo` — see the next paragraph.
 
-`status`, `check`, `run`, `trigger`, `rollback`, `cancel`, `pause`, `resume`, `history` and `log` don't need `sudo`,
+`status`, `check`, `run`, `trigger`, `rollback`, `cancel`, `pause`, `resume`, `history`, `log` and `domain list` don't need `sudo`,
 but they do need your account in the `flipd` group (see
 [install.md](install.md)) — none of the three directories they touch is
 world-readable, on purpose: `/etc/flipd/repos` (mode `0750`, `root:flipd` —
-`status` and `check` list repos from it), the Unix socket at
+`status`, `check` and `domain list` list repos from it), the Unix socket at
 `/run/flipd/flipd.sock` (mode `0660`,
 `flipd:flipd` — the only way to reach `run`, `trigger`, `rollback`,
 `cancel`, `pause`, `resume`, and the deploy key `check` needs), and `/var/log/flipd` (mode `0750`, same
@@ -167,9 +197,9 @@ root):
   service actually being down; `log` reports it from an unreadable log
   directory instead, and `history` fails the same way `log` does — it reads
   `history.jsonl` and `state.json` directly rather than the socket;
-- `status` fails outright with a bare `EACCES: permission denied, scandir
-  '/etc/flipd/repos'` (exit `1`), since it cannot even list the
-  configured repos.
+- `status` and `domain list` fail outright with a bare `EACCES: permission
+  denied, scandir '/etc/flipd/repos'` (exit `1`), since neither can even list
+  the configured repos.
 
 If you see either of those but `systemctl status flipd` says the
 service is fine, it's almost always a missing group, not a dead service.

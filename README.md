@@ -117,6 +117,7 @@ noticed had failed. See [docs/operating.md](docs/operating.md).
 | `flipd history <name>` | past attempts, newest first |
 | `flipd log <name>` | the attempt log |
 | `flipd env <name> build\|deploy` | extra environment for `BUILD` or `DEPLOY` |
+| `flipd domain add\|remove\|list` | put a repo on a hostname, take it off, or list what's configured |
 | `flipd remove <name>` | drop the config, keep state and logs |
 
 Flags, exit codes, and which need `sudo`: [docs/commands.md](docs/commands.md).

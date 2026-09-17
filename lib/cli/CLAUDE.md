@@ -24,7 +24,11 @@ a deploy key or touch a clone without racing a build. `check.mjs` here prints ro
 
 The exceptions write config, not state: `add` (writes a repo conf, generates a
 deploy key), `env` (edits an env file), `remove` (deletes a conf), `account`
-(writes an account). `add` is also the one command that talks to a forge's
+(writes an account), and `domain` (writes the repo conf's `DOMAIN*` keys and
+renders `/etc/caddy/conf.d/flipd-<name>.caddy`) — the only one of these that
+writes outside `/etc/flipd`, and the only one that reloads another service's
+config. It holds a lock at `/etc/flipd/domain.lock` across the whole write;
+`remove` takes the same lock before it deletes a repo's own site file. `add` is also the one command that talks to a forge's
 API: when `/etc/flipd/accounts/<host>.conf` exists for the URL's host it uploads
 the key and creates the webhook itself (`lib/forge.mjs`). A later failure
 undoes the uploaded key, the local key files it generated, and the conf if it
@@ -45,8 +49,9 @@ that host itself; a fingerprint has to be compared by a person.
 Every socket-using command takes an override parameter — `sendOverride`,
 `statusOverride` — so tests supply a canned reply instead of standing up a
 service. Keep that hook when adding a command; it is why the CLI tests are fast.
-`add` takes `forgeOverride` and `account` takes `keyscanOverride` for the same
-reason.
+`add` takes `forgeOverride`, `account` takes `keyscanOverride`, and `domain`
+and `remove` take `runOverride` to replace the `caddy validate`/`systemctl
+reload` calls their site-file work makes, for the same reason.
 
 ## Exit codes are an interface
 
