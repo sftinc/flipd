@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { renderSite, MARKER, takeLock, releaseLock } from '../lib/cli/domain.mjs';
+import { renderSite, MARKER, takeLock, releaseLock, checkTarget, checkHostArg } from '../lib/cli/domain.mjs';
 
 async function tmpdir() {
   return await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-domain-'));
@@ -72,4 +72,38 @@ test('a corrupt lock file is stolen rather than jamming the command forever', as
 
 test('releasing a lock that is not there is not an error', async () => {
   await releaseLock(path.join(await tmpdir(), 'nope.lock'));
+});
+
+test('a port must be a whole number in range', () => {
+  assert.equal(checkTarget({ port: '3000' }), null);
+  for (const port of ['0', '65536', '-1', '3000x', '', 'http']) {
+    assert.match(checkTarget({ port }), /--port/);
+  }
+});
+
+// The real hazard is not a broken Caddy directive. DOMAIN_ROOT is written into
+// the repo conf, and parseKV is line-oriented: a newline splits the line, the
+// next parse throws, and the service skips that repo on every event afterwards.
+test('a root must be absolute and free of anything but path characters', () => {
+  assert.equal(checkTarget({ root: '/var/www/app-1.0_x' }), null);
+  for (const root of ['relative/path', '/var/www/a b', '/var/www/a\nDEPLOY=rm -rf /', '/var/www/a\rb', '/var/www/a"b', '/var/www/a`b', '/var/www/a{b', '/var/www/a#b', '/var/www/a\\b']) {
+    assert.match(checkTarget({ root }), /--root/, `should refuse ${JSON.stringify(root)}`);
+  }
+});
+
+test('a refusal never echoes the value it rejected', () => {
+  assert.doesNotMatch(checkTarget({ root: '/var/www/SECRETVALUE b' }), /SECRETVALUE/);
+});
+
+test('the target flags are mutually exclusive, and --spa needs --root', () => {
+  assert.match(checkTarget({ port: '3000', root: '/x' }), /--port|--root/);
+  assert.match(checkTarget({ port: '3000', spa: true }), /--spa/);
+  assert.equal(checkTarget({ root: '/x', spa: true }), null);
+});
+
+test('a host is lowercased and held to a hostname shape', () => {
+  assert.equal(checkHostArg('App.Example.COM'), 'app.example.com');
+  for (const h of ['not a host', 'a..b', '-lead.example.com', 'x/y', '']) {
+    assert.throws(() => checkHostArg(h), { code: 'EBADHOST' });
+  }
 });
