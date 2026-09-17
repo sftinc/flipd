@@ -43,3 +43,24 @@ test('account paths: accountConf refuses anything that is not a lowercase hostna
   }
   assert.ok(HOST_RE.test('a.b-c.d1'));
 });
+
+test('caddy paths sit under the prefix, and a site file is always flipd-prefixed', () => {
+  const p = paths('/tmp/pfx');
+  assert.equal(p.caddyDir, '/tmp/pfx/etc/caddy/conf.d');
+  assert.equal(p.caddyMain, '/tmp/pfx/etc/caddy/Caddyfile');
+  assert.equal(p.domainLock, '/tmp/pfx/etc/flipd/domain.lock');
+  assert.equal(p.caddySite('app'), '/tmp/pfx/etc/caddy/conf.d/flipd-app.caddy');
+});
+
+// NAME_RE accepts "flipd" as a repo name, and this repository deploys itself.
+// Without the prefix that repo's site file would be install.sh's own
+// /etc/caddy/conf.d/flipd.caddy — the one file the feature must never touch.
+test('a repo named flipd cannot collide with the installer\'s flipd.caddy', () => {
+  const p = paths('/tmp/pfx');
+  assert.equal(p.caddySite('flipd'), '/tmp/pfx/etc/caddy/conf.d/flipd-flipd.caddy');
+  assert.notEqual(p.caddySite('flipd'), `${p.caddyDir}/flipd.caddy`);
+});
+
+test('caddySite validates the name like every other per-repo path', () => {
+  assert.throws(() => paths('/tmp/pfx').caddySite('../flipd'), { code: 'EBADNAME' });
+});
