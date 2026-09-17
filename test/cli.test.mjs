@@ -201,3 +201,26 @@ test('flipd rollback --to: a missing or malformed value is usage; run does not t
   const o = captureIO();
   assert.equal(await runCmd(['r', '--to', 'aaaaaaa'], { paths: p, stdout: o.stdout, stderr: o.stderr }), 2);
 });
+
+async function flipd(args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('exit', (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+test('domain is a known command and appears in the usage text', async () => {
+  const r = await flipd([]);            // no args prints usage
+  assert.match(r.stderr, /domain add <name> <host>/);
+  const bad = await flipd(['domain']);  // known command, bad sub-verb
+  assert.equal(bad.code, 2);
+  assert.match(bad.stderr, /domain add/);
+});
