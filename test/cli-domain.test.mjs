@@ -95,6 +95,12 @@ test('a refusal never echoes the value it rejected', () => {
   assert.doesNotMatch(checkTarget({ root: '/var/www/SECRETVALUE b' }), /SECRETVALUE/);
 });
 
+// Otherwise valid content with nothing wrong but a trailing newline: locks
+// down ROOT_RE's `$` boundary against an `m` flag creeping in later.
+test('a trailing newline on an otherwise valid root is still refused', () => {
+  assert.match(checkTarget({ root: '/var/www/app\n' }), /--root/);
+});
+
 test('the target flags are mutually exclusive, and --spa needs --root', () => {
   assert.match(checkTarget({ port: '3000', root: '/x' }), /--port|--root/);
   assert.match(checkTarget({ port: '3000', spa: true }), /--spa/);
@@ -106,4 +112,15 @@ test('a host is lowercased and held to a hostname shape', () => {
   for (const h of ['not a host', 'a..b', '-lead.example.com', 'x/y', '']) {
     assert.throws(() => checkHostArg(h), { code: 'EBADHOST' });
   }
+});
+
+// checkHost's own thrown message interpolates the value, and the host
+// position can be a wrapped paste of a secret — checkHostArg must not let
+// that message reach a terminal or journald.
+test('a bad host refusal never echoes the value it rejected', () => {
+  assert.throws(() => checkHostArg('SECRETVALUE not a host'), (e) => {
+    assert.equal(e.code, 'EBADHOST');
+    assert.doesNotMatch(e.message, /SECRETVALUE/);
+    return true;
+  });
 });
