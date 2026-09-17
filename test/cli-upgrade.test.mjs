@@ -328,13 +328,14 @@ test('a pull fast-forwards, reports the commits, and spots no installer artifact
   assert.equal(await c.head(c.clone), await c.head(c.seed));
 });
 
-test('a pull that moves flipd.service or install.sh names them', async (t) => {
+test('a pull that moves an installer artifact names it', async (t) => {
   const c = await makeClone();
   t.after(() => c.cleanup());
-  await c.commit({ 'flipd.service': '[Service]\n', 'install.sh': '#!/bin/sh\n' }, 'unit and installer');
+  const files = Object.fromEntries(INSTALLER_ARTIFACTS.map((a) => [a, `${a} contents\n`]));
+  await c.commit(files, 'installer artifacts');
   const r = await pull(c.clone, { runGit: realGit });
   assert.equal(r.ok, true);
-  assert.deepEqual(r.artifacts.sort(), ['flipd.service', 'install.sh']);
+  assert.deepEqual(r.artifacts.sort(), [...INSTALLER_ARTIFACTS].sort());
 });
 
 test('a pull that cannot fast-forward refuses and leaves HEAD alone', async (t) => {
@@ -541,6 +542,66 @@ test('--restart-only pulls nothing and restarts', async (t) => {
   assert.ok(!h.events.includes('git pull'));
   assert.equal(h.events.filter((e) => e.includes('restart')).length, 1);
   assert.equal(await c.head(c.clone), head);
+});
+
+test('losing root the second time around points at --restart-only, not a bare restart', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  const out = capture();
+  let sudoCalls = 0;
+  let t0 = 0;
+  // --restart-only, so `pulled` stays null and the diagnosis clause is empty
+  // — the exact shape that used to read as a lowercase sentence start.
+  const code = await upgrade(['--restart-only'], {
+    paths: {},
+    stdout: out.stdout,
+    stderr: out.stderr,
+    upgradeOverride: {
+      cloneDir: c.clone,
+      isRoot: false,
+      now: () => (t0 += 1),
+      sleep: async () => {},
+      sudoV: async () => { sudoCalls += 1; return { code: sudoCalls === 1 ? 0 : 1 }; },
+      send: async () => idleReply,
+      run: async () => ({ code: 0, stdout: loadedUnit(path.join(c.clone, 'bin', 'flipd')), stderr: '' }),
+      runGit: realGit,
+    },
+  });
+  assert.equal(code, 1);
+  assert.match(out.errText(), /--restart-only/);
+  assert.doesNotMatch(out.errText(), /\n[a-z]/, 'no lowercase sentence start after a blank diagnosis');
+});
+
+test('flipd going unreachable during the second wait points at --restart-only, with a bare restart named only as the last resort', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  const out = capture();
+  let sendCalls = 0;
+  let t0 = 0;
+  // --restart-only again, for the same empty-diagnosis reason.
+  const code = await upgrade(['--restart-only'], {
+    paths: {},
+    stdout: out.stdout,
+    stderr: out.stderr,
+    upgradeOverride: {
+      cloneDir: c.clone,
+      isRoot: true,
+      now: () => (t0 += 1),
+      sleep: async () => {},
+      sudoV: async () => ({ code: 0 }),
+      send: async () => {
+        sendCalls += 1;
+        if (sendCalls === 1) return idleReply; // the first idle wait
+        throw new Error('socket timeout'); // the second one goes unreachable
+      },
+      run: async () => ({ code: 0, stdout: loadedUnit(path.join(c.clone, 'bin', 'flipd')), stderr: '' }),
+      runGit: realGit,
+    },
+  });
+  assert.equal(code, 1);
+  assert.match(out.errText(), /sudo flipd upgrade --restart-only/);
+  assert.match(out.errText(), /never comes back/i);
+  assert.doesNotMatch(out.errText(), /\n[a-z]/, 'no lowercase sentence start after a blank diagnosis');
 });
 
 test('a service that never comes back exits 1 and says what it saw', async (t) => {
