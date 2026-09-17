@@ -12,6 +12,7 @@ import remove from '../lib/cli/remove.mjs';
 import { findReposFor } from '../lib/serve.mjs';
 import { parseRepoUrl } from '../lib/repourl.mjs';
 import { createForge } from '../lib/forge.mjs';
+import { MARKER } from '../lib/cli/domain.mjs';
 
 function io() {
   let out = '', err = '';
@@ -342,6 +343,52 @@ test('remove: an ambiguous status probe (timeout, no code) refuses rather than p
   const down = io();
   assert.equal(await remove(['r'], { paths: p, ...down, statusOverride: async () => { throw Object.assign(new Error('x'), { code: 'ECONNREFUSED' }); } }), 0);
   await assert.rejects(fs.stat(path.join(p.reposDir, 'r.conf')));
+});
+
+const idle = async () => ({ ok: true, running: null, queued: [] });
+
+test('remove deletes the repo\'s site file and reloads caddy', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), `${MARKER} — x\na.example.com {\n}\n`);
+  const ran = [];
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { ran.push(cmd); return {}; } }), 0);
+  await assert.rejects(fs.stat(p.caddySite('app')));
+  assert.deepEqual(ran, ['caddy', 'systemctl']);
+});
+
+test('remove does not reach for caddy when the repo has no site file', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  const ran = [];
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { ran.push(cmd); return {}; } }), 0);
+  assert.deepEqual(ran, []);
+});
+
+test('remove leaves a hand-written site file alone and says so', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), 'hand written\n');
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle }), 0);
+  assert.equal(await fs.readFile(p.caddySite('app'), 'utf8'), 'hand written\n');
+  assert.match(o.err(), /not managed by flipd/);
+});
+
+// Both deletions have happened by then; reporting success would be a lie about
+// a site that is still answering.
+test('a reload that fails after the file is gone exits 1 and says what to run', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), `${MARKER} — x\na.example.com {\n}\n`);
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { if (cmd === 'systemctl') throw new Error('nope'); return {}; } }), 1);
+  assert.match(o.err(), /systemctl reload caddy/);
 });
 
 test('check does not throw when a reply carries no rows (an old service ahead of a new CLI)', async () => {
