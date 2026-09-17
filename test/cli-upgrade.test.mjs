@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import upgrade, { parseSystemdShow } from '../lib/cli/upgrade.mjs';
+import upgrade, { parseSystemdShow, checkClone } from '../lib/cli/upgrade.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 function capture() {
   const out = [];
@@ -41,4 +46,72 @@ test('a bad flag is a usage error on stderr, exit 2', async () => {
   const code = await upgrade(['--nope'], { paths: {}, stdout: c.stdout, stderr: c.stderr });
   assert.equal(code, 2);
   assert.match(c.errText(), /usage: flipd upgrade \[--restart-only\]/);
+});
+
+const exec = promisify(execFile);
+const realGit = (args) => exec('git', args).then(
+  (r) => ({ code: 0, stdout: r.stdout, stderr: r.stderr }),
+  (e) => ({ code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? String(e) }),
+);
+
+// A real clone with a real origin, because that is what the command pulls from.
+async function makeClone() {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-upgrade-'));
+  const origin = path.join(base, 'origin');
+  const clone = path.join(base, 'clone');
+  await exec('git', ['init', '--bare', '-b', 'main', origin]);
+  const seed = path.join(base, 'seed');
+  await exec('git', ['clone', origin, seed]);
+  for (const [k, v] of [['user.email', 't@example.com'], ['user.name', 'Test']]) {
+    await exec('git', ['-C', seed, 'config', k, v]);
+  }
+  await fs.writeFile(path.join(seed, 'README.md'), 'one\n');
+  await exec('git', ['-C', seed, 'add', '.']);
+  await exec('git', ['-C', seed, 'commit', '-m', 'first']);
+  await exec('git', ['-C', seed, 'push', 'origin', 'main']);
+  await exec('git', ['clone', origin, clone]);
+  const commit = async (files, msg) => {
+    for (const [f, body] of Object.entries(files)) {
+      await fs.writeFile(path.join(seed, f), body);
+    }
+    await exec('git', ['-C', seed, 'add', '.']);
+    await exec('git', ['-C', seed, 'commit', '-m', msg]);
+    await exec('git', ['-C', seed, 'push', 'origin', 'main']);
+  };
+  const head = async (dir) => (await exec('git', ['-C', dir, 'rev-parse', 'HEAD'])).stdout.trim();
+  return { base, origin, seed, clone, commit, head, cleanup: () => fs.rm(base, { recursive: true, force: true }) };
+}
+
+test('a clean clone passes checkClone; a dirty one is refused', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  const clean = await checkClone(c.clone, { runGit: realGit, restartOnly: false });
+  assert.equal(clean.ok, true);
+  assert.equal(clean.isGit, true);
+
+  await fs.writeFile(path.join(c.clone, 'README.md'), 'edited\n');
+  const dirty = await checkClone(c.clone, { runGit: realGit, restartOnly: false });
+  assert.equal(dirty.ok, false);
+  assert.match(dirty.error, /uncommitted/i);
+});
+
+test('a directory that is not a git work tree is refused, unless --restart-only', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-nogit-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const refused = await checkClone(dir, { runGit: realGit, restartOnly: false });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /not a git/i);
+
+  const allowed = await checkClone(dir, { runGit: realGit, restartOnly: true });
+  assert.equal(allowed.ok, true);
+  assert.equal(allowed.isGit, false);
+});
+
+test('--restart-only still refuses a dirty clone: a restart ships uncommitted edits', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await fs.writeFile(path.join(c.clone, 'README.md'), 'edited\n');
+  const r = await checkClone(c.clone, { runGit: realGit, restartOnly: true });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /uncommitted/i);
 });
