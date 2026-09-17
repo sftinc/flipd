@@ -17,8 +17,9 @@ app.example.com, www.example.com {
 test('a root site renders file_server, and --spa adds the try_files fallback', () => {
   const plain = renderSite({ hosts: ['a.example.com'], root: '/var/www/app' });
   assert.match(plain, /^    root \* \/var\/www\/app$/m);
-  assert.match(plain, /^    handle \{\n        file_server\n    \}$/m);
+  assert.match(plain, /^    file_server$/m);
   assert.doesNotMatch(plain, /try_files/);
+  assert.doesNotMatch(plain, /handle/);
 
   const spa = renderSite({ hosts: ['a.example.com'], root: '/var/www/app', spa: true });
   assert.match(spa, /^    handle \{\n        try_files \{path\} \/index\.html\n        file_server\n    \}$/m);
