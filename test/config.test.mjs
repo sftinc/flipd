@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { paths } from '../lib/paths.mjs';
 import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile, parseAccount, loadAccount, editKV, loadRepo } from '../lib/config.mjs';
-import { makePrefix, writeAccountConf, confFixture } from './helpers.mjs';
+import { makePrefix, writeAccountConf, writeRepoConf } from './helpers.mjs';
 
 test('parseKV: trims, ignores blanks and comments, keeps everything after the first =', () => {
   const m = parseKV('  A = 1 \n\n# note\nB=x=y && $Z\n', null);
@@ -231,7 +231,8 @@ test('editKV trims a padded value and reports which key it trimmed', () => {
 });
 
 test('the DOMAIN keys load, split on whitespace, and default to empty', async () => {
-  const p = await confFixture({ 'app.conf': 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\nDOMAIN=a.example.com  b.example.com\nDOMAIN_PORT=3000\n' });
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'git@h:o/r.git', BUILD: 'x', DEPLOY: 'y', DOMAIN: 'a.example.com  b.example.com', DOMAIN_PORT: '3000' });
   const r = await loadRepo(p, 'app');
   assert.deepEqual(r.domain, ['a.example.com', 'b.example.com']);
   assert.equal(r.domainPort, '3000');
@@ -240,7 +241,8 @@ test('the DOMAIN keys load, split on whitespace, and default to empty', async ()
 });
 
 test('a repo with no DOMAIN keys loads with empty domain fields', async () => {
-  const p = await confFixture({ 'app.conf': 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\n' });
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'git@h:o/r.git', BUILD: 'x', DEPLOY: 'y' });
   const r = await loadRepo(p, 'app');
   assert.deepEqual(r.domain, []);
   assert.equal(r.domainPort, null);
@@ -248,7 +250,8 @@ test('a repo with no DOMAIN keys loads with empty domain fields', async () => {
 
 // The service never reads these. A garbage value must not stop a repo deploying.
 test('nonsense in a DOMAIN key still loads: it is the CLI that validates', async () => {
-  const p = await confFixture({ 'app.conf': 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\nDOMAIN_PORT=not-a-port\nDOMAIN_SPA=maybe\n' });
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'git@h:o/r.git', BUILD: 'x', DEPLOY: 'y', DOMAIN_PORT: 'not-a-port', DOMAIN_SPA: 'maybe' });
   const r = await loadRepo(p, 'app');
   assert.equal(r.domainPort, 'not-a-port');
   assert.equal(r.domainSpa, false);

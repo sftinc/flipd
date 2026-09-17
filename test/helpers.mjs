@@ -100,16 +100,6 @@ export async function writeAccountConf(p, host, kv) {
 // A forge's API, scripted. Records every request so a test can assert what
 // was sent (auth header, body) and answers from `script`, which the test may
 // edit between calls to make a later step succeed or fail.
-export async function confFixture(confs) {
-  const prefix = await tmpdir('flipd-conf');
-  const p = paths(prefix);
-  await fs.mkdir(p.reposDir, { recursive: true });
-  for (const [filename, content] of Object.entries(confs)) {
-    await fs.writeFile(path.join(p.reposDir, filename), content);
-  }
-  return p;
-}
-
 export async function fakeForge(script) {
   const seen = [];
   const server = http.createServer(async (req, res) => {
