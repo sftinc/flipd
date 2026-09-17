@@ -2,7 +2,7 @@
 // bin/flipd
 import { paths } from '../lib/paths.mjs';
 
-const COMMANDS = ['serve', 'add', 'check', 'run', 'trigger', 'rollback', 'cancel', 'pause', 'resume', 'status', 'history', 'log', 'env', 'remove', 'account'];
+const COMMANDS = ['serve', 'add', 'check', 'run', 'trigger', 'rollback', 'cancel', 'pause', 'resume', 'status', 'history', 'log', 'env', 'remove', 'account', 'upgrade'];
 const USAGE = `usage: flipd <command> [args]
 
   serve                              run the service (systemd does this)
@@ -19,6 +19,7 @@ const USAGE = `usage: flipd <command> [args]
   log <name> [attempt] [--follow]    print or tail an attempt log (the latest by default)
   env <name> build|deploy [--set K=V] [--unset K]
   remove <name>                      delete the repo's config file
+  upgrade [--restart-only]           wait for idle, pull the service clone, restart (--restart-only: skip the pull)
   account add <host> --kind github|forgejo|gitea [--api URL] [--ssh-port N]  < token-file
   account list | account remove <host>
 `;
