@@ -146,18 +146,22 @@ line), the site file at `/etc/caddy/conf.d/flipd-<name>.caddy` exists and was
 not written by flipd (move it aside first), a hostname is the webhook's own
 or already serves another repo, caddy is not installed, `conf.d` holds files
 nothing imports, `caddy validate` rejected the result, or `systemctl reload`
-failed. `2` a usage or validation error: a bad verb, a missing name, `--port`
-and `--root` together, `--spa` without `--root`, a `--port` outside 1–65535,
-a `--root` that is not an absolute path, a host that is not a DNS name, or
-`add` with no hostname and no `--port`/`--root` to give a repo that has
-neither yet. `add` and `remove` write the repo conf's `DOMAIN*` keys, then
+failed. `2` a usage or validation error: a bad verb, a missing name, an
+unknown option (named as such — the token itself is never echoed back),
+`--port` and `--root` together, `--spa` on a repo with no `DOMAIN_ROOT` and
+no `--root` in the same call (with a root already configured, `--spa` alone
+turns SPA on for it), a `--port` outside 1–65535, a `--root` that is not an
+absolute path, a host that is not a DNS name, `--port`/`--root`/`--spa`
+given to `remove`, which takes hostnames only, or `add` with no hostname and
+no `--port`/`--root`/`--spa` to give a repo that has no target yet. `add`
+and `remove` write the repo conf's `DOMAIN*` keys, then
 render, validate and reload the site file — on a caddy failure both are
 rolled back to what they held before the call, and the message says so (or
 names what could not be restored). Both hold a lock at
 `/etc/flipd/domain.lock` for the whole call and refuse, exit `1`, while
 another `domain add`/`remove` or a `flipd remove` holds it, naming the
-holding pid and how long it has been held. `list` reads the repo confs only
-— it takes no lock, needs no caddy, and needs no `sudo` — and marks a row
+holding pid, what it is doing, and when it took the lock. `list` reads the
+repo confs only
 `no site file` when the conf claims a hostname the rendered file does not
 back.
 
