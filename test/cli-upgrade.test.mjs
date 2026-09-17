@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS, probeService, waitForIdle, takeRoot, restartArgv, proveAlive } from '../lib/cli/upgrade.mjs';
+import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS, probeService, waitForIdle, takeRoot, restartArgv, proveAlive, pull, partialUpgradeNote, INSTALLER_ARTIFACTS } from '../lib/cli/upgrade.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
@@ -305,4 +305,69 @@ test('a service that never answers reports which of the three shapes it saw', as
     assert.equal(r.ok, false);
     assert.match(r.what, re);
   }
+});
+
+test('a pull that brings nothing reports changed:false and moves no HEAD', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  const before = await c.head(c.clone);
+  const r = await pull(c.clone, { runGit: realGit });
+  assert.equal(r.ok, true);
+  assert.equal(r.changed, false);
+  assert.equal(await c.head(c.clone), before);
+});
+
+test('a pull fast-forwards, reports the commits, and spots no installer artifacts', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'two\n' }, 'second commit');
+  const r = await pull(c.clone, { runGit: realGit });
+  assert.equal(r.ok, true);
+  assert.equal(r.changed, true);
+  assert.match(r.log, /second commit/);
+  assert.deepEqual(r.artifacts, []);
+  assert.equal(await c.head(c.clone), await c.head(c.seed));
+});
+
+test('a pull that moves flipd.service or install.sh names them', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'flipd.service': '[Service]\n', 'install.sh': '#!/bin/sh\n' }, 'unit and installer');
+  const r = await pull(c.clone, { runGit: realGit });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.artifacts.sort(), ['flipd.service', 'install.sh']);
+});
+
+test('a pull that cannot fast-forward refuses and leaves HEAD alone', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'upstream\n' }, 'upstream commit');
+  await exec('git', ['-C', c.clone, 'config', 'user.email', 't@example.com']);
+  await exec('git', ['-C', c.clone, 'config', 'user.name', 'Test']);
+  await fs.writeFile(path.join(c.clone, 'local.txt'), 'local\n');
+  await exec('git', ['-C', c.clone, 'add', '.']);
+  await exec('git', ['-C', c.clone, 'commit', '-m', 'local commit']);
+  const head = await c.head(c.clone);
+  const r = await pull(c.clone, { runGit: realGit });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /fast-forward|ff-only|diverge/i);
+  assert.equal(await c.head(c.clone), head);
+});
+
+test('a git failure carrying a credential is printed redacted', async () => {
+  const runGit = async (argv) => (argv.includes('rev-parse')
+    ? { code: 0, stdout: 'abc123\n', stderr: '' }
+    : { code: 1, stdout: '', stderr: 'fatal: could not read from https://tok3n@git.example.com/x.git\n' });
+  const r = await pull('/anywhere', { runGit });
+  assert.equal(r.ok, false);
+  assert.ok(!r.error.includes('tok3n'), `credential leaked: ${r.error}`);
+  assert.match(r.error, /\*\*\*@git\.example\.com/);
+});
+
+test('the partial-upgrade note gives an absolute installer path and warns about its restart', () => {
+  const note = partialUpgradeNote('/opt/flipd', ['flipd.service']);
+  assert.match(note, /sudo \/opt\/flipd\/install\.sh/);
+  assert.ok(!/sudo \.\/install\.sh/.test(note), 'a relative path depends on where the operator is standing');
+  assert.match(note, /restart/i);
+  assert.match(note, /partial/i);
 });
