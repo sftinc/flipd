@@ -12,6 +12,7 @@ import remove from '../lib/cli/remove.mjs';
 import { findReposFor } from '../lib/serve.mjs';
 import { parseRepoUrl } from '../lib/repourl.mjs';
 import { createForge } from '../lib/forge.mjs';
+import { MARKER, takeLock, releaseLock } from '../lib/cli/domain.mjs';
 
 function io() {
   let out = '', err = '';
@@ -281,6 +282,22 @@ test('env --set preserves comments and blank lines, and trims a padded value whi
   assert.ok(!o.out().includes('hunter2'), 'the trimmed-value note names the key only');
 });
 
+test('env: two --set for the same key in one call keep the later value and still report the earlier one as trimmed', async () => {
+  // A Map keyed by K would collapse ['A', '1 '] and ['A', '2'] into just the
+  // second entry before editKV ever saw the padded first one, silently
+  // dropping the "note: trimmed" line even though the write itself started
+  // from a padded assignment. The file bytes end up identical either way —
+  // only the note differs — which is exactly the kind of drift 333 green
+  // tests waved through once already.
+  const p = await makePrefix();
+  await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  const file = p.envFile('r', 'build');
+  const o = io();
+  assert.equal(await env(['r', 'build', '--set', 'A=1 ', '--set', 'A=2'], { paths: p, ...o }), 0);
+  assert.equal(await fs.readFile(file, 'utf8'), 'A=2\n');
+  assert.match(o.out(), /trimmed.*A/);
+});
+
 test('env: the $EDITOR path writes on a clean parse and refuses to loop without a tty on a malformed draft', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
@@ -326,6 +343,77 @@ test('remove: an ambiguous status probe (timeout, no code) refuses rather than p
   const down = io();
   assert.equal(await remove(['r'], { paths: p, ...down, statusOverride: async () => { throw Object.assign(new Error('x'), { code: 'ECONNREFUSED' }); } }), 0);
   await assert.rejects(fs.stat(path.join(p.reposDir, 'r.conf')));
+});
+
+const idle = async () => ({ ok: true, running: null, queued: [] });
+
+test('remove deletes the repo\'s site file and reloads caddy', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), `${MARKER} — x\na.example.com {\n}\n`);
+  const ran = [];
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { ran.push(cmd); return {}; } }), 0);
+  await assert.rejects(fs.stat(p.caddySite('app')));
+  assert.deepEqual(ran, ['caddy', 'systemctl']);
+});
+
+test('remove does not reach for caddy when the repo has no site file', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  const ran = [];
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { ran.push(cmd); return {}; } }), 0);
+  assert.deepEqual(ran, []);
+});
+
+test('remove leaves a hand-written site file alone and says so', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), 'hand written\n');
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle }), 0);
+  assert.equal(await fs.readFile(p.caddySite('app'), 'utf8'), 'hand written\n');
+  assert.match(o.err(), /not managed by flipd/);
+});
+
+// Both deletions have happened by then; reporting success would be a lie about
+// a site that is still answering.
+test('a reload that fails after the file is gone exits 1 and says what to run', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), `${MARKER} — x\na.example.com {\n}\n`);
+  const o = io();
+  assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { if (cmd === 'systemctl') throw new Error('nope'); return {}; } }), 1);
+  assert.match(o.err(), /systemctl reload caddy/);
+});
+
+// `remove` deletes the conf and then the site file, so it takes the domain lock
+// for the same reason `domain` does: a concurrent `domain add` on this repo
+// would otherwise validate and reload a config the other half of this command
+// is in the middle of deleting. Nothing outside the domain tests exercises that
+// lock, and the repo conf must still be there afterwards — a refusal that had
+// already deleted it would be worse than no lock at all.
+test('remove refuses while another command holds the domain lock, and deletes nothing', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), `${MARKER} — x\na.example.com {\n}\n`);
+  await takeLock(p.domainLock, 'domain add');
+  const ran = [];
+  const o = io();
+  try {
+    assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { ran.push(cmd); return {}; } }), 1);
+  } finally {
+    await releaseLock(p.domainLock);
+  }
+  assert.match(o.err(), /another flipd command is changing domains/);
+  assert.deepEqual(ran, []);
+  assert.ok(await fs.stat(p.repoConf('app')));
+  assert.ok(await fs.stat(p.caddySite('app')));
 });
 
 test('check does not throw when a reply carries no rows (an old service ahead of a new CLI)', async () => {

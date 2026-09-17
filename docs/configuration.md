@@ -25,6 +25,10 @@ logged to journald and skipped, and the other repos are unaffected. `REPO`,
 | `BUILD_ENV_FILE` | `/etc/flipd/env/<name>.build` | Where `BUILD`'s extra environment is read from. |
 | `DEPLOY_ENV_FILE` | `/etc/flipd/env/<name>.deploy` | The same for `STOP`, `DEPLOY` and `ON_FAILURE`. |
 | `HOOK_HOST` | written by `add` | The `PUBLIC_HOST` at the time `add` ran. With `PUBLIC_HOST` set, `check` prints the webhook recipe using it; with `PUBLIC_HOST` unset and this present, `check` says the webhook is configured off and where it pointed, then prints the SSH recipe. Not written when `add` ran without `PUBLIC_HOST`. |
+| `DOMAIN` | none | Space-separated hostnames served for this repo, written by `flipd domain`. One Caddy site block carries all of them. The service never reads this or the three keys below; they are here because a repo conf is where a repo's record belongs, and because an unknown key is an error. |
+| `DOMAIN_PORT` | none | The loopback port the site reverse-proxies to (`reverse_proxy 127.0.0.1:<port>`). Mutually exclusive with `DOMAIN_ROOT`. |
+| `DOMAIN_ROOT` | none | The directory the site serves as files. **Not `ROOT`**: `ROOT` is the directory inside the checkout that `BUILD` and `DEPLOY` run in, and this is a path on the box that Caddy reads. Mutually exclusive with `DOMAIN_PORT`. |
+| `DOMAIN_SPA` | none | `yes` adds `try_files {path} /index.html`, so a single-page app's router gets the shell for an unknown path. Only with `DOMAIN_ROOT`. |
 
 Globs: `*` matches anything except `/`, `**` anything including `/`, `**/`
 zero or more directories, `?` one character. A pattern must match the whole
