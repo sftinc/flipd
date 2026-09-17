@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS, probeService, waitForIdle } from '../lib/cli/upgrade.mjs';
+import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS, probeService, waitForIdle, takeRoot, restartArgv, proveAlive } from '../lib/cli/upgrade.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
@@ -264,4 +264,45 @@ test('a proved-down service short-circuits the wait', async () => {
     ...clock,
   });
   assert.equal(r.state, 'down');
+});
+
+test('root is taken through sudo -v, and a refusal is a message not a throw', async () => {
+  assert.equal(await takeRoot({ isRoot: true, sudoV: async () => { throw new Error('must not run'); } }), null);
+  assert.equal(await takeRoot({ isRoot: false, sudoV: async () => ({ code: 0 }) }), null);
+  const denied = await takeRoot({ isRoot: false, sudoV: async () => ({ code: 1 }) });
+  assert.match(denied, /root/);
+});
+
+test('the restart can never prompt: sudo is invoked with -n', () => {
+  assert.deepEqual(restartArgv(true), ['systemctl', 'restart', 'flipd']);
+  assert.deepEqual(restartArgv(false), ['sudo', '-n', 'systemctl', 'restart', 'flipd']);
+});
+
+test('proveAlive waits for the socket, not for the unit to look active', async () => {
+  const clock = fakeClock();
+  let calls = 0;
+  const r = await proveAlive({
+    send: async () => { if (++calls < 3) throw fail('ENOENT'); return idleReply; },
+    run: async () => ({ code: 0, stdout: loadedUnit(), stderr: '' }),
+    ...clock,
+  });
+  assert.equal(r.ok, true);
+});
+
+test('a service that never answers reports which of the three shapes it saw', async () => {
+  const shapes = [
+    [{ LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', MainPID: '0', ExecStart: '{ path=/o/b/f ; }' }, /exited and stayed down/i],
+    [{ LoadState: 'loaded', ActiveState: 'activating', SubState: 'auto-restart', MainPID: '0', ExecStart: '{ path=/o/b/f ; }' }, /loop/i],
+    [{ LoadState: 'loaded', ActiveState: 'active', SubState: 'running', MainPID: '9', ExecStart: '{ path=/o/b/f ; }' }, /not answering/i],
+  ];
+  for (const [kv, re] of shapes) {
+    const clock = fakeClock();
+    const r = await proveAlive({
+      send: async () => { throw fail('ENOENT'); },
+      run: async () => ({ code: 0, stdout: showOutput(kv), stderr: '' }),
+      ...clock,
+    });
+    assert.equal(r.ok, false);
+    assert.match(r.what, re);
+  }
 });
