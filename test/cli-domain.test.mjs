@@ -374,7 +374,10 @@ test('remove with no hostnames removes them all', async () => {
   await domain(['add', 'app', 'a.example.com', 'b.example.com', '--port', '3000'], io);
   assert.equal(await domain(['remove', 'app'], io), 0);
   await assert.rejects(fs.stat(p.caddySite('app')));
-  assert.doesNotMatch(await fs.readFile(p.repoConf('app'), 'utf8'), /^DOMAIN=/m);
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  for (const k of ['DOMAIN', 'DOMAIN_PORT', 'DOMAIN_ROOT', 'DOMAIN_SPA']) {
+    assert.doesNotMatch(conf, new RegExp(`^${k}=`, 'm'));
+  }
 });
 
 test('remove refuses a site file that is not flipd\'s', async () => {
@@ -411,9 +414,10 @@ test('list marks a row whose site file has gone missing', async () => {
 });
 
 test('list needs no lock and no caddy', async () => {
-  const { p, io } = await box({ caddyfile: null });
+  const { p, io, ran } = await box({ caddyfile: null });
   await takeLock(p.domainLock, 'domain add');
   assert.equal(await domain(['list'], io), 0);
+  assert.deepEqual(ran, []);   // no caddy validate, no systemctl reload — no external process at all
   await releaseLock(p.domainLock);
 });
 
