@@ -230,7 +230,9 @@ test('a repo conf that will not parse is skipped and named, not fatal', async ()
   } });
   assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 0);
   assert.match(out.stderr, /broken/);
-  assert.ok(await fs.readFile(p.caddySite('app'), 'utf8'));
+  const site = await fs.readFile(p.caddySite('app'), 'utf8');
+  assert.match(site, /^a\.example\.com \{$/m);
+  assert.match(site, /reverse_proxy 127\.0\.0\.1:3000/);
 });
 
 test('refuses a nonempty conf.d that nothing imports', async () => {
@@ -310,4 +312,50 @@ test('a live lock refuses the command', async () => {
   assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
   assert.match(out.stderr, /another flipd command/);
   await releaseLock(p.domainLock);
+});
+
+// C1 regression: install.sh's own activation check is line-anchored
+// (`^\s*import\s+(/etc/caddy/)?conf\.d/\*`), so a commented-out copy of that
+// line reads as "not imported" to install.sh too. hasImport must agree, or a
+// Caddyfile with the import commented out (staged, or half-undone by hand)
+// would see `add` report success while the site file it just wrote is never
+// picked up by Caddy at all. The unanchored substring check this replaces
+// would find "<caddyDir>/*" inside the commented line too and wrongly treat
+// it as already imported — reproduced here against this fixture's own
+// caddyDir, not the installer's literal /etc/caddy path, which is what made
+// the old check pass under this test's tmp-prefixed paths in the first place.
+test('a commented-out import line does not count; a real one is appended and the site is live', async () => {
+  const { p, io } = await box();
+  await fs.writeFile(p.caddyMain, `# import ${p.caddyDir}/*   (not enabled yet)\n`);
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 0);
+  const main = await fs.readFile(p.caddyMain, 'utf8');
+  assert.match(main, new RegExp(`^import ${p.caddyDir}/\\*$`, 'm'));                          // the real import got added
+  assert.match(main, new RegExp(`^# import ${p.caddyDir}/\\*   \\(not enabled yet\\)$`, 'm')); // the comment is untouched
+  assert.ok(await fs.readFile(p.caddySite('app'), 'utf8'));
+});
+
+test('a pure retarget is a real change and must not print "unchanged"', async () => {
+  const { io, out } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  out.stdout = '';
+  assert.equal(await domain(['add', 'app', '--root', '/var/www/app', '--spa'], io), 0);
+  assert.doesNotMatch(out.stdout, /unchanged/i);
+});
+
+test('a repo conf that exists but carries an unknown key gets its parse error relayed, not "no repo named"', async () => {
+  const { io, out } = await box({ confs: { app: 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\nBOGUS=1\n' } });
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
+  assert.doesNotMatch(out.stderr, /no repo named/);
+  assert.match(out.stderr, /unknown key/);
+});
+
+// /etc/caddy/Caddyfile is a dpkg conffile; writeAtomic renames a new file into
+// place, which would replace its inode, mode and owner and leave Caddy unable
+// to read its own config. Pinned at the source, the way test/install.test.mjs
+// pins invariants about install.sh: a later refactor that reaches for
+// writeAtomic near caddyMain "for consistency" must fail this test, not ship.
+test('the source never lets writeAtomic touch the Caddyfile', async () => {
+  const src = await fs.readFile(new URL('../lib/cli/domain.mjs', import.meta.url), 'utf8');
+  const bad = src.split('\n').filter((l) => l.includes('writeAtomic') && l.includes('caddyMain'));
+  assert.deepEqual(bad, []);
 });
