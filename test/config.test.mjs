@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { paths } from '../lib/paths.mjs';
-import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile, parseAccount, loadAccount } from '../lib/config.mjs';
+import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile, parseAccount, loadAccount, editKV } from '../lib/config.mjs';
 import { makePrefix, writeAccountConf } from './helpers.mjs';
 
 test('parseKV: trims, ignores blanks and comments, keeps everything after the first =', () => {
@@ -199,4 +199,33 @@ test('loadAccount: null when the file is absent, the parsed forge when present, 
   await writeAccountConf(p, 'bad.example', { KIND: 'nope', TOKEN: 'abc' });
   await assert.rejects(loadAccount(p, 'bad.example'), ConfigError);
   await assert.rejects(loadAccount(p, '../etc'), (e) => e.code === 'EBADHOST');
+});
+
+test('editKV replaces a key in place and leaves comments, blanks and order alone', () => {
+  const before = '# a comment\nREPO=git@h:o/r.git\n\n#BUILD=npm ci\nBRANCH=main\n';
+  const { text } = editKV(before, new Map([['BRANCH', 'deploy']]));
+  assert.equal(text, '# a comment\nREPO=git@h:o/r.git\n\n#BUILD=npm ci\nBRANCH=deploy\n');
+});
+
+test('editKV appends a key the file does not have', () => {
+  const { text } = editKV('REPO=x\n', new Map([['DOMAIN', 'a.example.com']]));
+  assert.equal(text, 'REPO=x\nDOMAIN=a.example.com\n');
+});
+
+test('editKV removes every line for a key set to null, and empties to ""', () => {
+  const { text } = editKV('A=1\nB=2\nA=3\n', new Map([['A', null]]));
+  assert.equal(text, 'B=2\n');
+  assert.equal(editKV('A=1\n', new Map([['A', null]])).text, '');
+});
+
+test('editKV collapses a duplicated key onto the line it replaced, and reports it', () => {
+  const { text, collapsed } = editKV('A=1\nB=2\nA=3\n', new Map([['A', '9']]));
+  assert.equal(text, 'A=9\nB=2\n');
+  assert.deepEqual(collapsed, ['A']);
+});
+
+test('editKV trims a padded value and reports which key it trimmed', () => {
+  const { text, trimmed } = editKV('A=1\n', new Map([['A', '  2  ']]));
+  assert.equal(text, 'A=2\n');
+  assert.deepEqual(trimmed, ['A']);
 });
