@@ -5,8 +5,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { paths } from '../lib/paths.mjs';
-import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile, parseAccount, loadAccount, editKV } from '../lib/config.mjs';
-import { makePrefix, writeAccountConf } from './helpers.mjs';
+import { ConfigError, MAIN_KEYS, parseKV, parseMain, parseRepo, loadRepos, loadEnvFile, parseAccount, loadAccount, editKV, loadRepo } from '../lib/config.mjs';
+import { makePrefix, writeAccountConf, confFixture } from './helpers.mjs';
 
 test('parseKV: trims, ignores blanks and comments, keeps everything after the first =', () => {
   const m = parseKV('  A = 1 \n\n# note\nB=x=y && $Z\n', null);
@@ -228,4 +228,28 @@ test('editKV trims a padded value and reports which key it trimmed', () => {
   const { text, trimmed } = editKV('A=1\n', new Map([['A', '  2  ']]));
   assert.equal(text, 'A=2\n');
   assert.deepEqual(trimmed, ['A']);
+});
+
+test('the DOMAIN keys load, split on whitespace, and default to empty', async () => {
+  const p = await confFixture({ 'app.conf': 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\nDOMAIN=a.example.com  b.example.com\nDOMAIN_PORT=3000\n' });
+  const r = await loadRepo(p, 'app');
+  assert.deepEqual(r.domain, ['a.example.com', 'b.example.com']);
+  assert.equal(r.domainPort, '3000');
+  assert.equal(r.domainRoot, null);
+  assert.equal(r.domainSpa, false);
+});
+
+test('a repo with no DOMAIN keys loads with empty domain fields', async () => {
+  const p = await confFixture({ 'app.conf': 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\n' });
+  const r = await loadRepo(p, 'app');
+  assert.deepEqual(r.domain, []);
+  assert.equal(r.domainPort, null);
+});
+
+// The service never reads these. A garbage value must not stop a repo deploying.
+test('nonsense in a DOMAIN key still loads: it is the CLI that validates', async () => {
+  const p = await confFixture({ 'app.conf': 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\nDOMAIN_PORT=not-a-port\nDOMAIN_SPA=maybe\n' });
+  const r = await loadRepo(p, 'app');
+  assert.equal(r.domainPort, 'not-a-port');
+  assert.equal(r.domainSpa, false);
 });
