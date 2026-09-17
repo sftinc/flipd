@@ -170,6 +170,11 @@ but it is not zero: a push landing in it is still lost, exactly as it is today.
 `sudo`** — the account conf is root-only because it holds a token that can
 create webhooks.
 
+**`upgrade` also needs `sudo`, for a different reason: it does not touch
+`/etc/flipd` at all.** It needs `systemctl restart flipd`, which is root-only,
+and it needs socket access the same way `status` does, to poll the service
+for idle before it restarts it.
+
 `status`, `check`, `run`, `trigger`, `rollback`, `cancel`, `pause`, `resume`, `history` and `log` don't need `sudo`,
 but they do need your account in the `flipd` group (see
 [install.md](install.md)) — none of the three directories they touch is

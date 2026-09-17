@@ -342,6 +342,14 @@ If it says the upgrade was partial, `flipd.service`, `flipd.logrotate` or
 `install.sh` path it prints, and check `flipd status` is idle first — the
 installer restarts flipd unconditionally and has no idle check of its own.
 
+`flipd upgrade` cannot tell a service you deliberately stopped from one that
+crashed — both read as "proved down" — so it will start flipd.service back up
+either way. That is intended, not a bug to work around.
+
+Never run `flipd upgrade` from inside a repo's `DEPLOY`. The idle wait it opens
+with has no timeout, and the build it would be waiting on is the very one
+running `DEPLOY`, so it deadlocks until `TIMEOUT` kills the attempt.
+
 ### Rotate or remove a forge token
 
     sudo flipd account remove <host>
