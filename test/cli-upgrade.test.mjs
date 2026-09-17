@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS, probeService } from '../lib/cli/upgrade.mjs';
+import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS, probeService, waitForIdle } from '../lib/cli/upgrade.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
@@ -230,4 +230,38 @@ test('a reply with the wrong shape is not read as idle', async () => {
     ...clock,
   });
   assert.equal(r.state, 'unreachable');
+});
+
+test('waits while a build is running and returns once idle, saying so once', async () => {
+  const clock = fakeClock();
+  const replies = [
+    { ok: true, running: 'site', queued: [] },
+    { ok: true, running: 'site', queued: [] },
+    { ok: true, running: 'site', queued: ['api'] },
+    { ok: true, running: null, queued: [] },
+  ];
+  let i = 0;
+  const said = [];
+  const r = await waitForIdle({
+    send: async () => replies[Math.min(i++, replies.length - 1)],
+    run: async () => ({ code: 0, stdout: loadedUnit(), stderr: '' }),
+    onWait: (t) => said.push(t),
+    ...clock,
+  });
+  assert.equal(r.state, 'up');
+  assert.equal(r.reply.running, null);
+  // Two distinct waits, four polls: a twenty-minute build must not print
+  // six hundred identical lines.
+  assert.deepEqual(said, ['site running', 'site running, 1 queued']);
+});
+
+test('a proved-down service short-circuits the wait', async () => {
+  const clock = fakeClock();
+  const r = await waitForIdle({
+    send: async () => { throw fail('ENOENT'); },
+    run: async () => ({ code: 0, stdout: showOutput({ LoadState: 'loaded', ActiveState: 'inactive', SubState: 'dead', MainPID: '0', ExecStart: '{ path=/opt/flipd/bin/flipd ; }' }), stderr: '' }),
+    onWait: () => {},
+    ...clock,
+  });
+  assert.equal(r.state, 'down');
 });
