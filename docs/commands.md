@@ -20,6 +20,7 @@ usage error; exit `3` is always the service being down or unreachable.
 | `flipd log <name> [attempt]` | group | an attempt log, the latest by default |
 | `flipd env <name> build\|deploy` | sudo | extra environment for `BUILD` or `DEPLOY` |
 | `flipd remove <name>` | sudo | deletes the conf file, keeps state and logs |
+| `flipd upgrade` | sudo | waits for idle, fast-forwards the service clone, restarts, proves it came back |
 
 "group" means your account is in the `flipd` group, or you are root. See
 [Permissions](#permissions).
@@ -144,6 +145,23 @@ queued.
 
 flipd never prints a `WEBHOOK_SECRET`, a private key, or any env-file value —
 only key names.
+
+**`upgrade [--restart-only]`**
+`0` upgraded, or already up to date with the service running. `1` refused or
+failed: a dirty clone, a clone `flipd.service` does not run, no root, a pull
+that will not fast-forward, a service that could not be reached (which is not
+the same as one that is down), or a service that did not answer its socket
+within 15s of the restart. `2` usage. Never `3`: a service that is *proved*
+down is a normal path here, since restarting it is the repair.
+
+`--restart-only` skips the pull and does everything else, which is what a
+change to `/etc/flipd/flipd.conf` needs. It still refuses a dirty clone — the
+unit execs straight out of it, so a restart would ship uncommitted edits.
+
+It waits for every repo to go idle before it pulls, and again before it
+restarts. The gap between that last check and the restart is a few
+milliseconds rather than however long you take to type the second command,
+but it is not zero: a push landing in it is still lost, exactly as it is today.
 
 ## Permissions
 

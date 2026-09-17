@@ -113,11 +113,23 @@ keyring the Caddy step adds when it has to install Caddy itself.
 
 ## Upgrade flipd
 
-    git -C /opt/flipd pull && sudo systemctl restart flipd
+    sudo flipd upgrade
 
-Restarting drops anything mid-build: the in-flight command is killed, its
-attempt is logged as `interrupted`, and the in-memory queue is lost. Check
-that `flipd status` shows nothing running first.
+`upgrade` waits until `flipd status` shows every repo idle, fast-forwards the
+clone, restarts, and then proves the service is answering again — so the check
+that used to be yours to remember is the command's. It refuses a clone with
+uncommitted changes, and it refuses a clone that is not the one
+`flipd.service` actually runs.
+
+A restart still drops anything mid-build: the in-flight command is killed, its
+attempt is logged as `interrupted`, and the in-memory queue is lost. `upgrade`
+shrinks the window in which that can happen to a few milliseconds; nothing can
+close it, because no mechanism carries a queued push across a restart.
+
+If the pull moves `flipd.service`, `flipd.logrotate` or `install.sh`, those are
+files only the installer copies into place, so `upgrade` says the upgrade was
+partial and prints the `install.sh` re-run to do yourself. It never runs the
+installer for you.
 
 One behaviour change to know about when upgrading past this version: a
 checkout containing `.gitmodules` now initialises its submodules, so a repo

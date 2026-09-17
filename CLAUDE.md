@@ -144,8 +144,10 @@ touch one:
 - **The service and a deployment are different checkouts.** `/opt/flipd` is the
   running service; each repo flipd deploys lives under `/var/lib/flipd/<name>/`.
   If a box deploys flipd with flipd, those are two copies of this repository,
-  and upgrading the service is `git -C /opt/flipd pull && systemctl restart
-flipd` — which no deploy does for you, and which needs `flipd status` idle
-  first, or the restart kills a running build and drops the queue.
+  and upgrading the service is `sudo flipd upgrade`, which waits for every repo to
+  be idle before it pulls and again before it restarts — no deploy does it for
+  you. The window it cannot close is the few milliseconds between its last idle
+  check and `SIGTERM`; a push landing there is still lost, because nothing carries
+  a queued push across a restart.
 - **Confirm a change behaviourally, not by reading config.** `caddy validate`
   proves syntax, not that a field path matched.

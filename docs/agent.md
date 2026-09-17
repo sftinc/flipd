@@ -43,7 +43,7 @@ a person settles it.
 | Settle a failed deploy, or go back a release | A `pending` release refuses every push and every `flipd trigger` until someone settles it. | [Settle a failed deploy, or roll back on purpose](#settle-a-failed-deploy-or-roll-back-on-purpose) |
 | Freeze deploys during an incident | `flipd pause` refuses pushes and triggers until `flipd resume`; `run` and `rollback` still work. | [operating.md](operating.md) |
 | Stop a hung build | `flipd cancel` frees the single worker so every other repo isn't stuck behind it. | [operating.md](operating.md) |
-| Upgrade flipd | `git pull` and restart — only while nothing is building. | [Upgrade flipd](#upgrade-flipd) |
+| Upgrade flipd | `flipd upgrade` pulls and restarts, waiting for idle itself. | [Upgrade flipd](#upgrade-flipd) |
 | Rotate a forge token | The token never reaches you, this time either. | [Rotate or remove a forge token](#rotate-or-remove-a-forge-token) |
 | Change a secret the build or deploy uses | `flipd env`, never the conf line. | [Change a secret the build or deploy uses](#change-a-secret-the-build-or-deploy-uses) |
 | Stop deploying a repo | The config goes; state, logs, and the forge's webhook and key stay. | [Stop deploying a repo](#stop-deploying-a-repo) |
@@ -304,8 +304,8 @@ Two things that catch people out:
   `ROOT` recorded with *that* release, so fixing `DEPLOY` fixes the next build
   and not a rollback to an older release.
 - **The server file is not like the repo file.** `/etc/flipd/flipd.conf` is read
-  once at startup, so a change there needs `sudo systemctl restart flipd` — with
-  the same idle check as an upgrade.
+  once at startup, so a change there needs `sudo flipd upgrade --restart-only`,
+  which waits for idle the same way an upgrade does.
 
 ### Settle a failed deploy, or roll back on purpose
 
@@ -326,14 +326,17 @@ attempt.
 
 ### Upgrade flipd
 
-    flipd status                                  # every repo must be idle first
-    git -C /opt/flipd pull && sudo systemctl restart flipd
-    systemctl is-active flipd && flipd status
+    sudo flipd upgrade
 
-**Check `status` before you restart, every time.** A restart kills whatever is
-mid-build: the running command dies, its attempt is recorded `interrupted`, and
-the in-memory queue is lost — a push that was waiting is simply gone, and the
-forge will not resend it. If anything is running or queued, wait.
+It waits for every repo to be idle by itself, so there is no check for you to
+remember. It refuses rather than guesses when it cannot reach the service —
+an unreachable socket is not proof that nothing is building, and the usual
+cause is a missing `flipd` group membership, not a dead service.
+
+If it says the upgrade was partial, `flipd.service`, `flipd.logrotate` or
+`install.sh` changed and only the installer can place them. Run the absolute
+`install.sh` path it prints, and check `flipd status` is idle first — the
+installer restarts flipd unconditionally and has no idle check of its own.
 
 ### Rotate or remove a forge token
 

@@ -48,6 +48,14 @@ service. Keep that hook when adding a command; it is why the CLI tests are fast.
 `add` takes `forgeOverride` and `account` takes `keyscanOverride` for the same
 reason.
 
+`upgrade` is the one command whose seams do not fit a named `xOverride` each:
+it is almost entirely I/O against three things a test must never touch — the
+socket, systemd and sudo — so it takes a single `upgradeOverride` object
+holding `cloneDir`, `send`, `run`, `sudoV`, `runGit`, `sleep`, `now` and
+`isRoot`. Same purpose as `sendOverride`, one bag instead of eight parameters.
+`run` takes a full argv, which is how the tests check that the restart is
+invoked as `sudo -n systemctl restart flipd` and never without `-n`.
+
 ## Exit codes are an interface
 
 They are documented in `docs/commands.md` and scripts depend on them.

@@ -118,6 +118,7 @@ noticed had failed. See [docs/operating.md](docs/operating.md).
 | `flipd log <name>` | the attempt log |
 | `flipd env <name> build\|deploy` | extra environment for `BUILD` or `DEPLOY` |
 | `flipd remove <name>` | drop the config, keep state and logs |
+| `flipd upgrade` | wait for idle, pull the service clone, restart it |
 
 Flags, exit codes, and which need `sudo`: [docs/commands.md](docs/commands.md).
 
