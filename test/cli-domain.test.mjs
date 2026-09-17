@@ -349,6 +349,74 @@ test('a repo conf that exists but carries an unknown key gets its parse error re
   assert.match(out.stderr, /unknown key/);
 });
 
+test('removing one host re-renders without it', async () => {
+  const { p, io } = await box();
+  await domain(['add', 'app', 'a.example.com', 'b.example.com', '--port', '3000'], io);
+  assert.equal(await domain(['remove', 'app', 'a.example.com'], io), 0);
+  assert.match(await fs.readFile(p.repoConf('app'), 'utf8'), /^DOMAIN=b\.example\.com$/m);
+  assert.match(await fs.readFile(p.caddySite('app'), 'utf8'), /^b\.example\.com \{$/m);
+});
+
+test('removing the last host deletes the file and clears every DOMAIN key', async () => {
+  const { p, io } = await box();
+  await domain(['add', 'app', 'a.example.com', '--root', '/var/www/app', '--spa'], io);
+  assert.equal(await domain(['remove', 'app', 'a.example.com'], io), 0);
+  await assert.rejects(fs.stat(p.caddySite('app')));
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  for (const k of ['DOMAIN', 'DOMAIN_PORT', 'DOMAIN_ROOT', 'DOMAIN_SPA']) {
+    assert.doesNotMatch(conf, new RegExp(`^${k}=`, 'm'));
+  }
+  assert.match(conf, /^BUILD=x$/m);   // the rest of the conf is untouched
+});
+
+test('remove with no hostnames removes them all', async () => {
+  const { p, io } = await box();
+  await domain(['add', 'app', 'a.example.com', 'b.example.com', '--port', '3000'], io);
+  assert.equal(await domain(['remove', 'app'], io), 0);
+  await assert.rejects(fs.stat(p.caddySite('app')));
+  assert.doesNotMatch(await fs.readFile(p.repoConf('app'), 'utf8'), /^DOMAIN=/m);
+});
+
+test('remove refuses a site file that is not flipd\'s', async () => {
+  const { p, io, out } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  await fs.writeFile(p.caddySite('app'), 'hand written\n');
+  assert.equal(await domain(['remove', 'app'], io), 1);
+  assert.equal(await fs.readFile(p.caddySite('app'), 'utf8'), 'hand written\n');
+});
+
+test('list prints the configured state, one row per repo that has one', async () => {
+  const { io, out } = await box({ confs: {
+    app: 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\n',
+    docs: 'REPO=git@h:o/d.git\nBUILD=x\nDEPLOY=y\nDOMAIN=d.example.com\nDOMAIN_ROOT=/var/www/d\nDOMAIN_SPA=yes\n',
+    none: 'REPO=git@h:o/n.git\nBUILD=x\nDEPLOY=y\n',
+  } });
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  out.stdout = '';
+  assert.equal(await domain(['list'], io), 0);
+  assert.match(out.stdout, /app\s+a\.example\.com\s+127\.0\.0\.1:3000/);
+  assert.match(out.stdout, /docs\s+d\.example\.com\s+\/var\/www\/d \(spa\)/);
+  assert.doesNotMatch(out.stdout, /none/);
+});
+
+// A row claiming a hostname nothing serves is the failure this feature exists
+// to remove, so it must never be printed as if it were fine.
+test('list marks a row whose site file has gone missing', async () => {
+  const { p, io, out } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  await fs.rm(p.caddySite('app'));
+  out.stdout = '';
+  await domain(['list'], io);
+  assert.match(out.stdout, /no site file/);
+});
+
+test('list needs no lock and no caddy', async () => {
+  const { p, io } = await box({ caddyfile: null });
+  await takeLock(p.domainLock, 'domain add');
+  assert.equal(await domain(['list'], io), 0);
+  await releaseLock(p.domainLock);
+});
+
 // /etc/caddy/Caddyfile is a dpkg conffile; writeAtomic renames a new file into
 // place, which would replace its inode, mode and owner and leave Caddy unable
 // to read its own config. Pinned at the source, the way test/install.test.mjs
