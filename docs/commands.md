@@ -161,9 +161,9 @@ names what could not be restored). Both hold a lock at
 `/etc/flipd/domain.lock` for the whole call and refuse, exit `1`, while
 another `domain add`/`remove` or a `flipd remove` holds it, naming the
 holding pid, what it is doing, and when it took the lock. `list` reads the
-repo confs only
-`no site file` when the conf claims a hostname the rendered file does not
-back.
+repo confs only — it takes no lock, needs no caddy, and needs no `sudo` — and
+marks a row `no site file` when the conf claims a hostname that no rendered
+file backs.
 
 **`remove <name>`**
 `0` the conf file is gone; state, logs and env files are kept, and the command
