@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import upgrade, { parseSystemdShow, checkClone } from '../lib/cli/upgrade.mjs';
+import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS } from '../lib/cli/upgrade.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
@@ -114,4 +114,44 @@ test('--restart-only still refuses a dirty clone: a restart ships uncommitted ed
   const r = await checkClone(c.clone, { runGit: realGit, restartOnly: true });
   assert.equal(r.ok, false);
   assert.match(r.error, /uncommitted/i);
+});
+
+const showOutput = (kv) => Object.entries(kv).map(([k, v]) => `${k}=${v}`).join('\n');
+const loadedUnit = (execPath = '/opt/flipd/bin/flipd') => showOutput({
+  LoadState: 'loaded',
+  ActiveState: 'active',
+  SubState: 'running',
+  MainPID: '42',
+  ExecStart: `{ path=${execPath} ; argv[]=${execPath} serve ; ignore_errors=no }`,
+});
+
+test('readUnit asks for labelled properties, not --value', async () => {
+  let seen = null;
+  const run = async (argv) => { seen = argv; return { code: 0, stdout: loadedUnit(), stderr: '' }; };
+  const r = await readUnit({ run });
+  assert.equal(r.ok, true);
+  assert.equal(seen[0], 'systemctl');
+  assert.ok(!seen.includes('--value'), 'must not use --value: not-found exits 0');
+  assert.deepEqual(seen.slice(1), SHOW_ARGS);
+});
+
+test('a unit that is not loaded, or has no ExecStart, is refused', async () => {
+  const notFound = await readUnit({
+    run: async () => ({ code: 0, stdout: showOutput({ LoadState: 'not-found', ActiveState: 'inactive', SubState: 'dead', MainPID: '0', ExecStart: '' }), stderr: '' }),
+  });
+  assert.equal(notFound.ok, false);
+  assert.match(notFound.error, /not-found|no flipd\.service/i);
+
+  const noExec = await readUnit({
+    run: async () => ({ code: 0, stdout: showOutput({ LoadState: 'loaded', ActiveState: 'active', SubState: 'running', MainPID: '1', ExecStart: '' }), stderr: '' }),
+  });
+  assert.equal(noExec.ok, false);
+  assert.match(noExec.error, /ExecStart/);
+});
+
+test('checkUnitClone passes its own clone and names the other one', () => {
+  assert.equal(checkUnitClone(parseSystemdShow(loadedUnit('/opt/flipd/bin/flipd')), '/opt/flipd'), null);
+  const wrong = checkUnitClone(parseSystemdShow(loadedUnit('/srv/flipd/bin/flipd')), '/opt/flipd');
+  assert.match(wrong, /\/srv\/flipd/);
+  assert.match(wrong, /\/opt\/flipd/);
 });
