@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { renderSite, MARKER, takeLock, releaseLock, checkTarget, checkHostArg } from '../lib/cli/domain.mjs';
 import domain from '../lib/cli/domain.mjs';
 import { paths } from '../lib/paths.mjs';
+import { loadRepo } from '../lib/config.mjs';
 
 const runReal = promisify(execFile);
 // Worked out once at module load, not inside the test body, so `skip` gets a
@@ -387,6 +388,120 @@ test('remove with no hostnames removes them all', async () => {
   for (const k of ['DOMAIN', 'DOMAIN_PORT', 'DOMAIN_ROOT', 'DOMAIN_SPA']) {
     assert.doesNotMatch(conf, new RegExp(`^${k}=`, 'm'));
   }
+});
+
+// `remove`'s rollback is the half nothing covered: `add`'s failure path only
+// ever has to *delete* a file it created, while a failed remove-all has to put
+// a deleted site file back — same bytes, same 0644, or caddy is left serving a
+// config that is no longer on disk.
+test('a failing validate during a remove restores the conf and recreates the site file', async () => {
+  const { p, io, out } = await box();
+  await domain(['add', 'app', 'a.example.com', 'b.example.com', '--port', '3000'], io);
+  const site = await fs.readFile(p.caddySite('app'), 'utf8');
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  out.stderr = '';
+  const ran = [];
+  io.runOverride = async (cmd, argv) => {
+    ran.push([cmd, ...argv].join(' '));
+    if (cmd === 'caddy') throw Object.assign(new Error('boom'), { stderr: 'caddy said no' });
+    return {};
+  };
+  assert.equal(await domain(['remove', 'app'], io), 1);
+  assert.equal(await fs.readFile(p.caddySite('app'), 'utf8'), site);          // recreated, byte for byte
+  assert.equal((await fs.stat(p.caddySite('app'))).mode & 0o777, 0o644);      // and readable by caddy's own user
+  assert.equal(await fs.readFile(p.repoConf('app'), 'utf8'), conf);           // DOMAIN* keys all back
+  assert.ok(!ran.includes('systemctl reload caddy'));                          // no reload was owed
+  assert.match(out.stderr, /caddy said no/);
+  await assert.rejects(fs.stat(p.domainLock));                                 // and the lock is released
+});
+
+// The flag exists to stop a newline splitting the conf line: DOMAIN_ROOT is
+// written into the repo conf, and a broken conf means the service skips this
+// repo on every push afterwards. checkTarget is unit-tested; this pins the
+// whole path, including that the conf still parses.
+test('a --root carrying a newline is refused before anything is written, and the conf still parses', async () => {
+  const { p, io, out, ran } = await box();
+  const before = await fs.readFile(p.repoConf('app'), 'utf8');
+  assert.equal(await domain(['add', 'app', 'h.example.com', '--root', '/var/www/a\nDEPLOY=rm -rf /'], io), 2);
+  assert.equal(await fs.readFile(p.repoConf('app'), 'utf8'), before);   // byte-unchanged
+  assert.deepEqual(ran, []);                                           // caddy was never asked
+  await assert.rejects(fs.stat(p.caddySite('app')));
+  const repo = await loadRepo(p, 'app');                               // and it still parses
+  assert.equal(repo.deploy, 'y');
+  assert.deepEqual(repo.domain, []);
+  assert.doesNotMatch(out.stderr, /rm -rf/);                           // the value is never echoed
+});
+
+test('a live lock refuses domain remove too, and touches nothing', async () => {
+  const { p, io, out } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  const site = await fs.readFile(p.caddySite('app'), 'utf8');
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  out.stderr = '';
+  await takeLock(p.domainLock, 'flipd remove');
+  assert.equal(await domain(['remove', 'app'], io), 1);
+  assert.match(out.stderr, /another flipd command/);
+  assert.equal(await fs.readFile(p.caddySite('app'), 'utf8'), site);
+  assert.equal(await fs.readFile(p.repoConf('app'), 'utf8'), conf);
+  await releaseLock(p.domainLock);
+});
+
+// `--port` on a remove used to validate, then be dropped: the empty host list
+// read as "remove all", so a flag written to *scope* a removal took the whole
+// site offline and exited 0.
+test('remove refuses a target flag rather than reading it as "remove everything"', async () => {
+  const { p, io, out, ran } = await box();
+  await domain(['add', 'app', 'a.example.com', 'b.example.com', '--port', '3000'], io);
+  const site = await fs.readFile(p.caddySite('app'), 'utf8');
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  out.stderr = '';
+  for (const flags of [['--port', '3000'], ['--root', '/var/www/app'], ['--spa']]) {
+    assert.equal(await domain(['remove', 'app', ...flags], io), 2, flags.join(' '));
+    assert.match(out.stderr, /hostnames only/);
+    assert.equal(await fs.readFile(p.caddySite('app'), 'utf8'), site);
+    assert.equal(await fs.readFile(p.repoConf('app'), 'utf8'), conf);
+  }
+  assert.deepEqual(ran, [`caddy validate --config ${p.caddyMain}`, 'systemctl reload caddy']);   // the add's, and nothing since
+});
+
+// Nothing was removed, so nothing may be claimed to have been: a repo with no
+// DOMAIN at all takes the remove-all path too.
+test('remove on a repo with no hostnames does not claim it deleted a site file', async () => {
+  const { p, io, out } = await box();
+  assert.equal(await domain(['remove', 'app'], io), 0);
+  assert.doesNotMatch(out.stdout, /removed/);
+  assert.doesNotMatch(out.stdout, new RegExp(p.caddySite('app').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+// The repo has a root; refusing with "--spa needs --root" would be a lie about
+// why. checkTarget cannot see the repo, so `add` has to decide this one.
+test('--spa alone turns SPA on for the root the repo already has', async () => {
+  const { p, io, out } = await box();
+  await domain(['add', 'app', 'a.example.com', '--root', '/var/www/app'], io);
+  out.stdout = '';
+  assert.equal(await domain(['add', 'app', 'b.example.com', '--spa'], io), 0);
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  assert.match(conf, /^DOMAIN_SPA=yes$/m);
+  assert.match(conf, /^DOMAIN_ROOT=\/var\/www\/app$/m);   // the root it had, not one it lost
+  assert.match(conf, /^DOMAIN=a\.example\.com b\.example\.com$/m);
+  assert.match(await fs.readFile(p.caddySite('app'), 'utf8'), /try_files/);
+  assert.doesNotMatch(out.stdout, /unchanged/i);
+  // …and on a repo whose target is a port there is no root to turn it on for.
+  const port = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], port.io);
+  assert.equal(await domain(['add', 'app', '--spa'], port.io), 2);
+  assert.match(port.out.stderr, /--spa/);
+});
+
+// parseArgs' own message quotes the offending token back verbatim, and argv is
+// exactly where a botched paste of a secret lands — lib/cli/env.mjs refuses to
+// echo a stray argument for the same reason.
+test('an unknown option is named as one, never quoted back', async () => {
+  const { io, out } = await box();
+  assert.equal(await domain(['add', 'app', '--SECRETVALUEpasted'], io), 2);
+  assert.doesNotMatch(out.stderr, /SECRETVALUE/);
+  assert.match(out.stderr, /unknown option/);
+  assert.match(out.stderr, /usage: flipd domain add/);
 });
 
 test('remove refuses a site file that is not flipd\'s', async () => {

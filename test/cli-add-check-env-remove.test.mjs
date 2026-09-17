@@ -12,7 +12,7 @@ import remove from '../lib/cli/remove.mjs';
 import { findReposFor } from '../lib/serve.mjs';
 import { parseRepoUrl } from '../lib/repourl.mjs';
 import { createForge } from '../lib/forge.mjs';
-import { MARKER } from '../lib/cli/domain.mjs';
+import { MARKER, takeLock, releaseLock } from '../lib/cli/domain.mjs';
 
 function io() {
   let out = '', err = '';
@@ -389,6 +389,31 @@ test('a reload that fails after the file is gone exits 1 and says what to run', 
   const o = io();
   assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { if (cmd === 'systemctl') throw new Error('nope'); return {}; } }), 1);
   assert.match(o.err(), /systemctl reload caddy/);
+});
+
+// `remove` deletes the conf and then the site file, so it takes the domain lock
+// for the same reason `domain` does: a concurrent `domain add` on this repo
+// would otherwise validate and reload a config the other half of this command
+// is in the middle of deleting. Nothing outside the domain tests exercises that
+// lock, and the repo conf must still be there afterwards — a refusal that had
+// already deleted it would be worse than no lock at all.
+test('remove refuses while another command holds the domain lock, and deletes nothing', async () => {
+  const p = await makePrefix();
+  await writeRepoConf(p, 'app', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddySite('app'), `${MARKER} — x\na.example.com {\n}\n`);
+  await takeLock(p.domainLock, 'domain add');
+  const ran = [];
+  const o = io();
+  try {
+    assert.equal(await remove(['app'], { paths: p, ...o, statusOverride: idle, runOverride: async (cmd) => { ran.push(cmd); return {}; } }), 1);
+  } finally {
+    await releaseLock(p.domainLock);
+  }
+  assert.match(o.err(), /another flipd command is changing domains/);
+  assert.deepEqual(ran, []);
+  assert.ok(await fs.stat(p.repoConf('app')));
+  assert.ok(await fs.stat(p.caddySite('app')));
 });
 
 test('check does not throw when a reply carries no rows (an old service ahead of a new CLI)', async () => {
