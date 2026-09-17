@@ -4,9 +4,34 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { renderSite, MARKER, takeLock, releaseLock, checkTarget, checkHostArg } from '../lib/cli/domain.mjs';
+import domain from '../lib/cli/domain.mjs';
+import { paths } from '../lib/paths.mjs';
 
 async function tmpdir() {
   return await fs.mkdtemp(path.join(os.tmpdir(), 'flipd-domain-'));
+}
+
+// A prefix with /etc/flipd/repos/<name>.conf, /etc/caddy/Caddyfile, and
+// optionally conf.d. Returns the paths object plus a recorder for the commands
+// the command would have run.
+async function box({ confs = { app: 'REPO=git@h:o/r.git\nBRANCH=main\n#BUILD=npm ci\nBUILD=x\nDEPLOY=y\n' }, main = 'PUBLIC_HOST=deploy.example.com\nWEBHOOK_SECRET=s\n', caddyfile = 'localhost:80 {\n}\n', confd = null, fail = null } = {}) {
+  const prefix = await tmpdir();
+  const p = paths(prefix);
+  await fs.mkdir(p.reposDir, { recursive: true });
+  await fs.mkdir(path.dirname(p.caddyMain), { recursive: true });
+  await fs.writeFile(p.mainConf, main);
+  if (caddyfile !== null) await fs.writeFile(p.caddyMain, caddyfile);
+  for (const [n, text] of Object.entries(confs)) await fs.writeFile(p.repoConf(n), text);
+  if (confd) { await fs.mkdir(p.caddyDir, { recursive: true }); for (const [f, t] of Object.entries(confd)) await fs.writeFile(path.join(p.caddyDir, f), t); }
+  const ran = [];
+  const runOverride = async (cmd, argv) => {
+    ran.push([cmd, ...argv].join(' '));
+    if (fail && `${cmd} ${argv[0]}`.startsWith(fail)) throw Object.assign(new Error('boom'), { stderr: 'caddy said no' });
+    return { stdout: '', stderr: '' };
+  };
+  const out = { stdout: '', stderr: '' };
+  const io = { paths: p, stdout: { write: (s) => { out.stdout += s; } }, stderr: { write: (s) => { out.stderr += s; } }, runOverride };
+  return { p, io, out, ran, prefix };
 }
 
 test('a port site renders a reverse_proxy block with every host on one line', () => {
@@ -123,4 +148,166 @@ test('a bad host refusal never echoes the value it rejected', () => {
     assert.doesNotMatch(e.message, /SECRETVALUE/);
     return true;
   });
+});
+
+test('add writes the conf keys and the site file, then validates and reloads', async () => {
+  const { p, io, out, ran } = await box();
+  assert.equal(await domain(['add', 'app', 'App.Example.com', '--port', '3000'], io), 0);
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  assert.match(conf, /^DOMAIN=app\.example\.com$/m);       // lowercased
+  assert.match(conf, /^DOMAIN_PORT=3000$/m);
+  assert.match(conf, /^#BUILD=npm ci$/m);                  // comments survive
+  const site = await fs.readFile(p.caddySite('app'), 'utf8');
+  assert.match(site, /reverse_proxy 127\.0\.0\.1:3000/);
+  assert.equal((await fs.stat(p.caddySite('app'))).mode & 0o777, 0o644);
+  assert.deepEqual(ran, [`caddy validate --config ${p.caddyMain}`, 'systemctl reload caddy']);
+  assert.match(out.stdout, /app\.example\.com/);
+});
+
+test('a second add puts both hosts on one block, in order', async () => {
+  const { p, io } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  assert.equal(await domain(['add', 'app', 'b.example.com'], io), 0);
+  assert.match(await fs.readFile(p.repoConf('app'), 'utf8'), /^DOMAIN=a\.example\.com b\.example\.com$/m);
+  assert.match(await fs.readFile(p.caddySite('app'), 'utf8'), /^a\.example\.com, b\.example\.com \{$/m);
+});
+
+test('re-adding a host is success and reports no change; a repeat in one call lands once', async () => {
+  const { p, io, out } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  assert.equal(await domain(['add', 'app', 'a.example.com'], io), 0);
+  assert.match(out.stdout, /unchanged/i);
+  await domain(['add', 'app', 'c.example.com', 'c.example.com'], io);
+  assert.match(await fs.readFile(p.repoConf('app'), 'utf8'), /^DOMAIN=a\.example\.com c\.example\.com$/m);
+});
+
+test('a new target retargets the whole site', async () => {
+  const { p, io } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  await domain(['add', 'app', '--root', '/var/www/app', '--spa'], io);
+  const conf = await fs.readFile(p.repoConf('app'), 'utf8');
+  assert.doesNotMatch(conf, /^DOMAIN_PORT=/m);
+  assert.match(conf, /^DOMAIN_ROOT=\/var\/www\/app$/m);
+  assert.match(conf, /^DOMAIN_SPA=yes$/m);
+  assert.match(await fs.readFile(p.caddySite('app'), 'utf8'), /try_files/);
+});
+
+test('conf.d and the import line are created when missing, and never duplicated', async () => {
+  const { p, io } = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  const first = await fs.readFile(p.caddyMain, 'utf8');
+  assert.match(first, new RegExp(`^import ${p.caddyDir}/\\*$`, 'm'));
+  await domain(['add', 'app', 'b.example.com'], io);
+  assert.equal(await fs.readFile(p.caddyMain, 'utf8'), first);
+  assert.equal((first.match(/^import /gm) || []).length, 1);
+});
+
+test('an import line the installer already wrote is recognised and not added again', async () => {
+  const { p, io } = await box({ caddyfile: 'import /etc/caddy/conf.d/*\n' });
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], io);
+  assert.equal(await fs.readFile(p.caddyMain, 'utf8'), 'import /etc/caddy/conf.d/*\n');
+});
+
+test('refuses the webhook hostname whatever its case, naming the trap', async () => {
+  const { io, out } = await box({ main: 'PUBLIC_HOST=Deploy.Example.com\nWEBHOOK_SECRET=s\n' });
+  assert.equal(await domain(['add', 'app', 'deploy.example.com', '--port', '3000'], io), 1);
+  assert.match(out.stderr, /ambiguous site definition/);
+});
+
+test('refuses a host another repo already claims, naming that repo', async () => {
+  const { io, out } = await box({ confs: {
+    app: 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\n',
+    docs: 'REPO=git@h:o/d.git\nBUILD=x\nDEPLOY=y\nDOMAIN=shared.example.com\nDOMAIN_PORT=4000\n',
+  } });
+  assert.equal(await domain(['add', 'app', 'shared.example.com', '--port', '3000'], io), 1);
+  assert.match(out.stderr, /docs/);
+});
+
+test('a repo conf that will not parse is skipped and named, not fatal', async () => {
+  const { p, io, out } = await box({ confs: {
+    app: 'REPO=git@h:o/r.git\nBUILD=x\nDEPLOY=y\n',
+    broken: 'this line has no equals sign\n',
+  } });
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 0);
+  assert.match(out.stderr, /broken/);
+  assert.ok(await fs.readFile(p.caddySite('app'), 'utf8'));
+});
+
+test('refuses a nonempty conf.d that nothing imports', async () => {
+  const { io, out } = await box({ confd: { 'someone-elses.caddy': 'x.example.com {\n}\n' } });
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
+  assert.match(out.stderr, /1 file/);
+  assert.doesNotMatch(out.stderr, /someone-elses/);   // filenames can carry control characters
+  assert.doesNotMatch(out.stderr, /install\.sh/);      // that only moves the surprise
+});
+
+test('refuses when there is no Caddyfile at all', async () => {
+  const { io, out } = await box({ caddyfile: null });
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
+  assert.match(out.stderr, /install\.sh --host/);
+});
+
+test('refuses an unknown repo, and a repo with no target yet and no flag', async () => {
+  const a = await box();
+  assert.equal(await domain(['add', 'nope', 'a.example.com', '--port', '3000'], a.io), 1);
+  const b = await box();
+  assert.equal(await domain(['add', 'app', 'a.example.com'], b.io), 2);
+  assert.match(b.out.stderr, /--port|--root/);
+});
+
+test('refuses to write over a conf.d file that is not flipd\'s', async () => {
+  const { p, io, out } = await box();
+  await fs.mkdir(p.caddyDir, { recursive: true });
+  await fs.writeFile(p.caddyMain, `import ${p.caddyDir}/*\n`);
+  await fs.writeFile(p.caddySite('app'), 'hand written\n');
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
+  assert.equal(await fs.readFile(p.caddySite('app'), 'utf8'), 'hand written\n');
+  assert.match(out.stderr, /not managed by flipd/);
+});
+
+test('a failing validate puts both files back exactly as they were', async () => {
+  const { p, io, out, ran } = await box({ fail: 'caddy validate' });
+  const before = await fs.readFile(p.repoConf('app'), 'utf8');
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
+  assert.equal(await fs.readFile(p.repoConf('app'), 'utf8'), before);
+  await assert.rejects(fs.stat(p.caddySite('app')));        // did not exist before, does not now
+  assert.ok(!ran.includes('systemctl reload caddy'));       // no reload was owed
+  assert.match(out.stderr, /caddy said no/);                // caddy's own words are relayed
+});
+
+test('a failing validate restores a site file that did exist, byte for byte', async () => {
+  const good = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], good.io);
+  const site = await fs.readFile(good.p.caddySite('app'), 'utf8');
+  const conf = await fs.readFile(good.p.repoConf('app'), 'utf8');
+  good.io.runOverride = async (cmd, argv) => { if (cmd === 'caddy') throw Object.assign(new Error('boom'), { stderr: 'nope' }); return {}; };
+  assert.equal(await domain(['add', 'app', 'b.example.com'], good.io), 1);
+  assert.equal(await fs.readFile(good.p.caddySite('app'), 'utf8'), site);
+  assert.equal(await fs.readFile(good.p.repoConf('app'), 'utf8'), conf);
+});
+
+test('a failing reload restores the same way and says where to look', async () => {
+  const { p, io, out } = await box({ fail: 'systemctl reload' });
+  const before = await fs.readFile(p.repoConf('app'), 'utf8');
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
+  assert.equal(await fs.readFile(p.repoConf('app'), 'utf8'), before);
+  assert.match(out.stderr, /journalctl -u caddy/);
+});
+
+test('the lock is gone after a success and after a failure', async () => {
+  const ok = await box();
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], ok.io);
+  await assert.rejects(fs.stat(ok.p.domainLock));
+  const bad = await box({ fail: 'caddy validate' });
+  await domain(['add', 'app', 'a.example.com', '--port', '3000'], bad.io);
+  await assert.rejects(fs.stat(bad.p.domainLock));
+});
+
+test('a live lock refuses the command', async () => {
+  const { p, io, out } = await box();
+  await fs.mkdir(p.etc, { recursive: true });
+  await takeLock(p.domainLock, 'domain add');
+  assert.equal(await domain(['add', 'app', 'a.example.com', '--port', '3000'], io), 1);
+  assert.match(out.stderr, /another flipd command/);
+  await releaseLock(p.domainLock);
 });
