@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS } from '../lib/cli/upgrade.mjs';
+import upgrade, { parseSystemdShow, checkClone, readUnit, checkUnitClone, SHOW_ARGS, probeService } from '../lib/cli/upgrade.mjs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
@@ -154,4 +154,80 @@ test('checkUnitClone passes its own clone and names the other one', () => {
   const wrong = checkUnitClone(parseSystemdShow(loadedUnit('/srv/flipd/bin/flipd')), '/opt/flipd');
   assert.match(wrong, /\/srv\/flipd/);
   assert.match(wrong, /\/opt\/flipd/);
+});
+
+const fail = (code) => Object.assign(new Error(code), { code });
+const idleReply = { ok: true, running: null, queued: [] };
+// A fake clock, so an 8s probe window costs no wall-clock time.
+function fakeClock() {
+  let t = 0;
+  return { now: () => t, sleep: async (ms) => { t += ms; } };
+}
+
+test('a socket that answers is up', async () => {
+  const clock = fakeClock();
+  const r = await probeService({ send: async () => idleReply, run: async () => ({ code: 0, stdout: '', stderr: '' }), ...clock });
+  assert.equal(r.state, 'up');
+});
+
+test('a timeout is not proof of down: it is unreachable, and it names the group', async () => {
+  const clock = fakeClock();
+  const r = await probeService({
+    send: async () => { throw new Error('socket timeout'); },
+    run: async () => ({ code: 0, stdout: loadedUnit(), stderr: '' }),
+    ...clock,
+  });
+  assert.equal(r.state, 'unreachable');
+});
+
+test('EACCES is not proof of down either', async () => {
+  const clock = fakeClock();
+  const r = await probeService({
+    send: async () => { throw fail('EACCES'); },
+    run: async () => ({ code: 0, stdout: loadedUnit(), stderr: '' }),
+    ...clock,
+  });
+  assert.equal(r.state, 'unreachable');
+});
+
+test('no socket plus ActiveState=failed is proved down', async () => {
+  const clock = fakeClock();
+  const r = await probeService({
+    send: async () => { throw fail('ENOENT'); },
+    run: async () => ({ code: 0, stdout: showOutput({ LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', MainPID: '0', ExecStart: '{ path=/opt/flipd/bin/flipd ; }' }), stderr: '' }),
+    ...clock,
+  });
+  assert.equal(r.state, 'down');
+});
+
+test('a crash loop shows SubState=auto-restart and is proved down', async () => {
+  const clock = fakeClock();
+  const r = await probeService({
+    send: async () => { throw fail('ECONNREFUSED'); },
+    run: async () => ({ code: 0, stdout: showOutput({ LoadState: 'loaded', ActiveState: 'activating', SubState: 'auto-restart', MainPID: '0', ExecStart: '{ path=/opt/flipd/bin/flipd ; }' }), stderr: '' }),
+    ...clock,
+  });
+  assert.equal(r.state, 'down');
+});
+
+test('no socket but steadily active for the whole window is unreachable, never down', async () => {
+  const clock = fakeClock();
+  let probes = 0;
+  const r = await probeService({
+    send: async () => { probes++; throw fail('ECONNREFUSED'); },
+    run: async () => ({ code: 0, stdout: loadedUnit(), stderr: '' }),
+    ...clock,
+  });
+  assert.equal(r.state, 'unreachable');
+  assert.ok(probes > 1, 'must re-probe rather than judge on one sample');
+});
+
+test('a reply with the wrong shape is not read as idle', async () => {
+  const clock = fakeClock();
+  const r = await probeService({
+    send: async () => ({ ok: true }),               // no running, no queued
+    run: async () => ({ code: 0, stdout: loadedUnit(), stderr: '' }),
+    ...clock,
+  });
+  assert.equal(r.state, 'unreachable');
 });
