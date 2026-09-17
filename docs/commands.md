@@ -141,7 +141,7 @@ is not an attempt id.
 non-zero. With neither `--set` nor `--unset` it opens the file in `$EDITOR`
 (default `vi`) and re-validates on save.
 
-**`domain add <name> <host>... [--port N | --root DIR] [--spa]`**, **`domain remove <name> [<host>...]`**, **`domain list [name]`**
+**`domain add <name> <host>... [--port N | --root DIR] [--spa]`**, **`domain remove <name> [host...]`**, **`domain list [name]`**
 `0` written, or (`list`) printed. `1` a refusal or a caddy failure: no repo
 by that name, its conf will not parse (the message names the conf and the
 line), the site file at `/etc/caddy/conf.d/flipd-<name>.caddy` exists and was

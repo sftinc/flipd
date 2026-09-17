@@ -41,7 +41,7 @@ first. It also refuses the webhook's own hostname and a hostname already
 serving another repo — the same `ambiguous site definition` trap the
 hand-written path below has to avoid on its own.
 
-`flipd domain remove <name> [<host>...]` drops one hostname, or with none
+`flipd domain remove <name> [host...]` drops one hostname, or with none
 named, all of them and the site file along with them — which is also what
 `flipd remove <name>` now does on its way out, so removing a repo no longer
 leaves its site block behind. `flipd domain list [name]` prints what is

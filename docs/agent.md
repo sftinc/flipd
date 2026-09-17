@@ -43,10 +43,11 @@ a person settles it.
 | Settle a failed deploy, or go back a release | A `pending` release refuses every push and every `flipd trigger` until someone settles it. | [Settle a failed deploy, or roll back on purpose](#settle-a-failed-deploy-or-roll-back-on-purpose) |
 | Freeze deploys during an incident | `flipd pause` refuses pushes and triggers until `flipd resume`; `run` and `rollback` still work. | [operating.md](operating.md) |
 | Stop a hung build | `flipd cancel` frees the single worker so every other repo isn't stuck behind it. | [operating.md](operating.md) |
+| Put the app on a hostname | `flipd domain add` writes the Caddy site block, validates and reloads. Needs the name to resolve to the box first. | [serving-with-caddy.md](serving-with-caddy.md) |
 | Upgrade flipd | `flipd upgrade` pulls and restarts, waiting for idle itself. | [Upgrade flipd](#upgrade-flipd) |
 | Rotate a forge token | The token never reaches you, this time either. | [Rotate or remove a forge token](#rotate-or-remove-a-forge-token) |
 | Change a secret the build or deploy uses | `flipd env`, never the conf line. | [Change a secret the build or deploy uses](#change-a-secret-the-build-or-deploy-uses) |
-| Stop deploying a repo | The config goes; state, logs, and the forge's webhook and key stay. | [Stop deploying a repo](#stop-deploying-a-repo) |
+| Stop deploying a repo | The config and its Caddy site block go; state, logs, and the forge's webhook and key stay. | [Stop deploying a repo](#stop-deploying-a-repo) |
 
 **Ask the operator which of these they want. Do not assume.** "Help me with
 flipd" usually means the first row — and the first row is the one with the
@@ -183,7 +184,8 @@ Then the run order. Each step says whether it can be undone.
 3. **Add the operator to the group** (reversible). The installer prints
    `sudo usermod -aG flipd <you>`. Run it, then start a fresh login shell — the
    group is what lets `status`, `check`, `run`, `trigger`, `rollback`,
-   `history`, `log`, `pause`, `resume` and `cancel` work without `sudo`.
+   `history`, `log`, `pause`, `resume`, `cancel` and `domain list` work without
+   `sudo`.
 4. **Add a forge account** (**gate** — see the token rule above), if they want
    automatic setup. **Ask; do not assume they need one.** For a single repo,
    creating a scoped token is usually more work than pasting a deploy key once,
@@ -379,6 +381,13 @@ Removes `/etc/flipd/repos/<name>.conf`, and with it flipd's reaction to that
 repo's pushes. It refuses while that repo is running or queued. State, logs and
 env files are kept, and the command prints the `rm` lines for all three if the
 operator wants them gone — decide that with them, not for them.
+
+One thing does go with the conf: if `flipd domain` gave the repo a hostname,
+`remove` deletes `/etc/caddy/conf.d/flipd-<name>.caddy` and reloads Caddy, so
+the site stops answering rather than sitting there pointed at a port nothing
+listens on. A site file the operator wrote by hand is left alone and named.
+On a box with no Caddy, or a repo that never had a hostname, `remove` does not
+reach for Caddy at all.
 
 The deploy key and the webhook stay on the forge; flipd never deletes either.
 Say so: the webhook keeps firing at a `/deploy` that no longer matches a repo,
