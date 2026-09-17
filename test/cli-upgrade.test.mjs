@@ -371,3 +371,198 @@ test('the partial-upgrade note gives an absolute installer path and warns about 
   assert.match(note, /restart/i);
   assert.match(note, /partial/i);
 });
+
+// A harness that records the order of everything the command does to the
+// outside world. Ordering is the whole design, so ordering is what is asserted.
+function harness({ clone, statusReplies = [idleReply], isRoot = false, unit = loadedUnit() }) {
+  const events = [];
+  const replies = [...statusReplies];
+  const c = capture();
+  let restarted = false;
+  return {
+    events,
+    out: c,
+    ctx: {
+      paths: {},
+      stdout: c.stdout,
+      stderr: c.stderr,
+      upgradeOverride: {
+        cloneDir: clone,
+        isRoot,
+        now: (() => { let t = 0; return () => (t += 1); })(),
+        sleep: async () => {},
+        sudoV: async () => { events.push('sudo -v'); return { code: 0 }; },
+        send: async () => {
+          events.push('status');
+          if (restarted) return idleReply;
+          const r = replies.length > 1 ? replies.shift() : replies[0];
+          if (r instanceof Error) throw r;
+          return r;
+        },
+        run: async (argv) => {
+          if (argv[argv.length - 1] === 'flipd' && argv.includes('restart')) {
+            events.push(argv.join(' '));
+            restarted = true;
+            return { code: 0, stdout: '', stderr: '' };
+          }
+          return { code: 0, stdout: unit, stderr: '' };
+        },
+        runGit: async (argv) => {
+          if (argv.includes('pull')) events.push('git pull');
+          return realGit(argv);
+        },
+      },
+    },
+  };
+}
+
+test('the pull and the restart both happen only after status reports idle', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'two\n' }, 'second');
+  const h = harness({
+    clone: c.clone,
+    unit: loadedUnit(path.join(c.clone, 'bin', 'flipd')),
+    statusReplies: [
+      { ok: true, running: 'site', queued: [] },
+      { ok: true, running: 'site', queued: [] },
+      idleReply,
+    ],
+  });
+  const code = await upgrade([], h.ctx);
+  assert.equal(code, 0, h.out.errText());
+
+  const pullAt = h.events.indexOf('git pull');
+  const restartAt = h.events.findIndex((e) => e.includes('restart'));
+  // The third status call is the first idle one. Found by scanning, not by a
+  // literal index: `sudo -v` is recorded before the first status, so a
+  // hard-coded 2 would point at the second poll and pass against a pull that
+  // ran one poll too early.
+  const statusAt = h.events.map((e, i) => (e === 'status' ? i : -1)).filter((i) => i >= 0);
+  const idleAt = statusAt[2];
+  assert.ok(pullAt > idleAt, `pull at ${pullAt} must follow the idle reply at ${idleAt}: ${h.events}`);
+  assert.ok(restartAt > pullAt, `restart must follow the pull: ${h.events}`);
+  // Root is taken again after the wait and before the restart, because an
+  // unbounded wait can outlast a sudo timestamp.
+  const sudos = h.events.map((e, i) => (e === 'sudo -v' ? i : -1)).filter((i) => i >= 0);
+  assert.equal(sudos.length, 2, `root must be taken twice: ${h.events}`);
+  assert.ok(sudos[1] < restartAt, 'the second sudo -v must precede the restart');
+  assert.deepEqual(h.events.filter((e) => e.includes('restart')), ['sudo -n systemctl restart flipd']);
+});
+
+test('work appearing after the pull still delays the restart', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'two\n' }, 'second');
+  const h = harness({
+    clone: c.clone,
+    unit: loadedUnit(path.join(c.clone, 'bin', 'flipd')),
+    statusReplies: [idleReply, { ok: true, running: 'site', queued: [] }, idleReply],
+  });
+  const code = await upgrade([], h.ctx);
+  assert.equal(code, 0, h.out.errText());
+  const restartAt = h.events.findIndex((e) => e.includes('restart'));
+  const busyAt = h.events.indexOf('status', h.events.indexOf('git pull'));
+  assert.ok(restartAt > busyAt, `restart must wait out the second busy window: ${h.events}`);
+});
+
+test('already up to date with the service up: no restart, exit 0', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  const h = harness({ clone: c.clone, unit: loadedUnit(path.join(c.clone, 'bin', 'flipd')) });
+  const code = await upgrade([], h.ctx);
+  assert.equal(code, 0, h.out.errText());
+  assert.equal(h.events.filter((e) => e.includes('restart')).length, 0);
+  assert.match(h.out.text(), /already up to date/i);
+});
+
+test('already up to date but the service is DOWN: it still restarts', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  const down = showOutput({ LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', MainPID: '0', ExecStart: `{ path=${path.join(c.clone, 'bin', 'flipd')} ; }` });
+  const h = harness({ clone: c.clone, unit: down, statusReplies: [fail('ENOENT')] });
+  const code = await upgrade([], h.ctx);
+  assert.equal(code, 0, h.out.errText());
+  assert.equal(h.events.filter((e) => e.includes('restart')).length, 1,
+    'a crashed box that is already up to date is exactly what this must fix');
+});
+
+test('an unreachable service refuses and does not move HEAD', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'two\n' }, 'second');
+  const head = await c.head(c.clone);
+  const h = harness({
+    clone: c.clone,
+    unit: loadedUnit(path.join(c.clone, 'bin', 'flipd')),
+    statusReplies: [new Error('socket timeout')],
+  });
+  const code = await upgrade([], h.ctx);
+  assert.equal(code, 1);
+  assert.equal(await c.head(c.clone), head, 'nothing may be pulled on an unreachable service');
+  assert.match(h.out.errText(), /flipd group|journalctl/i);
+});
+
+test('a unit pointing at another clone refuses before HEAD moves', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'two\n' }, 'second');
+  const head = await c.head(c.clone);
+  const h = harness({ clone: c.clone, unit: loadedUnit('/srv/elsewhere/bin/flipd') });
+  const code = await upgrade([], h.ctx);
+  assert.equal(code, 1);
+  assert.match(h.out.errText(), /\/srv\/elsewhere/);
+  assert.equal(await c.head(c.clone), head);
+});
+
+test('no root refuses before HEAD moves', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'two\n' }, 'second');
+  const head = await c.head(c.clone);
+  const h = harness({ clone: c.clone, unit: loadedUnit(path.join(c.clone, 'bin', 'flipd')) });
+  h.ctx.upgradeOverride.sudoV = async () => ({ code: 1 });
+  const code = await upgrade([], h.ctx);
+  assert.equal(code, 1);
+  assert.equal(await c.head(c.clone), head);
+});
+
+test('--restart-only pulls nothing and restarts', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  await c.commit({ 'README.md': 'two\n' }, 'second');
+  const head = await c.head(c.clone);
+  const h = harness({ clone: c.clone, unit: loadedUnit(path.join(c.clone, 'bin', 'flipd')) });
+  const code = await upgrade(['--restart-only'], h.ctx);
+  assert.equal(code, 0, h.out.errText());
+  assert.ok(!h.events.includes('git pull'));
+  assert.equal(h.events.filter((e) => e.includes('restart')).length, 1);
+  assert.equal(await c.head(c.clone), head);
+});
+
+test('a service that never comes back exits 1 and says what it saw', async (t) => {
+  const c = await makeClone();
+  t.after(() => c.cleanup());
+  const unit = showOutput({ LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed', MainPID: '0', ExecStart: `{ path=${path.join(c.clone, 'bin', 'flipd')} ; }` });
+  const events = [];
+  const out = capture();
+  let t0 = 0;
+  const code = await upgrade(['--restart-only'], {
+    paths: {},
+    stdout: out.stdout,
+    stderr: out.stderr,
+    upgradeOverride: {
+      cloneDir: c.clone,
+      isRoot: true,
+      now: () => (t0 += 1000),
+      sleep: async () => {},
+      sudoV: async () => ({ code: 0 }),
+      send: async () => { throw fail('ENOENT'); },
+      run: async (argv) => { events.push(argv.join(' ')); return { code: 0, stdout: unit, stderr: '' }; },
+      runGit: realGit,
+    },
+  });
+  assert.equal(code, 1);
+  assert.match(out.errText(), /exited and stayed down/i);
+  assert.match(out.errText(), /journalctl -u flipd/);
+});
