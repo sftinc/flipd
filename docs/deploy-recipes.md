@@ -272,14 +272,16 @@ it green, and nothing notices until a person does.
 - Keep the whole thing under `TIMEOUT`. A check that can wait longer than the
   cap is killed by it, and the outcome is the same `deploy failed`.
 
-## Notifying on failure
+## Notifying
 
 `ON_FAILURE` runs after any outcome other than `ok` and `skipped`, so it fires
 for a failed fetch (a revoked key), a failed build, a `STOP` that would not
-finish, a failed deploy, a build cut off by a restart, and one stopped by
-`flipd cancel`. It gets the deploy
-environment plus `DEPLOY_OUTCOME` and `DEPLOY_LOG`, has 60 seconds, and its
-own result changes nothing.
+finish, a failed deploy, a health check that never passed, a build cut off by a
+restart, and one stopped by `flipd cancel`. `ON_SUCCESS` runs after `ok` — a
+confirmed deploy, including a rollback that confirms. `skipped` reaches
+neither: a push that changed nothing under `WATCH` is not news. Both get the
+deploy environment plus `DEPLOY_OUTCOME` and `DEPLOY_LOG`, have 60 seconds, and
+their own result changes nothing.
 
     ON_FAILURE=curl -fsS -m 10 -d "$DEPLOY_NAME: $DEPLOY_OUTCOME at ${DEPLOY_SHA:-?}  see $DEPLOY_LOG" https://ntfy.sh/<topic>
 
@@ -292,6 +294,25 @@ it is masked in the logs rather than quoted in the conf. `DEPLOY_SHA` is
 empty when the fetch itself failed, and `DEPLOY_RELEASE_ID` is empty when no
 checkout happened (`DEPLOY_RELEASE_DIR` then names the `releases/` directory
 itself), so quote them.
+
+### Telling a deploy from a recovery
+
+`ON_SUCCESS` fires after every confirmed deploy, which is what you want for
+"app deployed abc123". When the interesting message is the *other* one — the
+service is back — branch on `DEPLOY_RECOVERED`:
+
+    ON_SUCCESS=curl -fsS -m 10 -d "$DEPLOY_NAME $([ "$DEPLOY_RECOVERED" = yes ] && echo recovered || echo deployed) at ${DEPLOY_SHA:-?}" https://ntfy.sh/<topic>
+
+flipd has already applied its own rule — every outcome but `ok` and `skipped`
+is a failure — so nothing here has to match against the outcome names. It is
+`no` on a repo's first deploy, where there is no previous attempt to recover
+from.
+
+One thing it gets wrong, quietly: `state.last` holds only the attempt before
+this one, so a `skipped` push landing between the failure and the fix costs the
+`yes`. You get "deployed" where "recovered" was true. The other direction —
+claiming a recovery that never happened — cannot occur, which is the direction
+worth being wrong in.
 
 ## Trying a DEPLOY
 

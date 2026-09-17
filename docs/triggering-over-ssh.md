@@ -33,7 +33,7 @@ It is the webhook without a payload. Everything the webhook does, it does:
 - **Coalesces** with a webhook, or another trigger, for the same repo. A
   trigger that arrives mid-build is folded into one catch-up rerun, labelled
   `coalesced` in the attempt log and `events.log`.
-- **`ON_FAILURE` fires** the same way.
+- **`ON_FAILURE` and `ON_SUCCESS` fire** the same way.
 
 **One trigger is one repo file.** It is given a name, not a repository, so a
 monorepo deploying several projects ([Several projects in one

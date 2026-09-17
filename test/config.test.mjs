@@ -145,6 +145,8 @@ test('parseRepo: defaults, required keys, name and ROOT rules', () => {
   assert.equal(r.timeout, 1200);
   assert.equal(r.onFailure, null);
   assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nON_FAILURE=curl x', p).onFailure, 'curl x');
+  assert.equal(r.onSuccess, null);
+  assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nON_SUCCESS=curl y', p).onSuccess, 'curl y');
   assert.equal(r.stop, null, 'STOP is optional and null when absent');
   assert.equal(parseRepo('a', 'REPO=a\nBUILD=b\nDEPLOY=c\nSTOP=sudo /usr/local/bin/drain', p).stop, 'sudo /usr/local/bin/drain');
   assert.equal(r.healthcheck, null, 'HEALTHCHECK is optional and null when absent');

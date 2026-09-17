@@ -146,9 +146,9 @@ Flags, exit codes, and which need `sudo`: [docs/commands.md](docs/commands.md).
   schedule, and cron is the schedule — see
   [docs/operating.md](docs/operating.md).
 - **Post commit statuses.** It holds a deploy key and no API token, by
-  decision, and a deploy key cannot write a status. `ON_FAILURE` is the
-  substitute: the only signal is the one you wire up.
-- **Notify on its own.** Beyond running `ON_FAILURE`, nothing.
+  decision, and a deploy key cannot write a status. `ON_FAILURE` and
+  `ON_SUCCESS` are the substitute: the only signal is the one you wire up.
+- **Notify on its own.** Beyond running `ON_FAILURE` and `ON_SUCCESS`, nothing.
 
 ## Tests
 

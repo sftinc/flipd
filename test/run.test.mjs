@@ -7,7 +7,7 @@ import path from 'node:path';
 import { makePrefix, makeSourceRepo, writeRepoConf, tmpdir } from './helpers.mjs';
 import { loadRepo } from '../lib/config.mjs';
 import { readState, writeState, writePaused } from '../lib/state.mjs';
-import { runEntry, runOnFailure, resolveRollbackTarget, resolveRollbackTo } from '../lib/run.mjs';
+import { runEntry, runNotify, resolveRollbackTarget, resolveRollbackTo } from '../lib/run.mjs';
 import { runCheck } from '../lib/check.mjs';
 import { gitEnv, setRemoteUrl } from '../lib/git.mjs';
 import { readHistory } from '../lib/log.mjs';
@@ -361,6 +361,63 @@ test('ON_FAILURE output is masked before it reaches events.log', async () => {
   assert.ok(!ev.includes('deploysecret99'));
 });
 
+const exists = (f) => fs.stat(f).then(() => true, () => false);
+
+test('ON_SUCCESS runs after a confirmed deploy, with the outcome, the log and DEPLOY_RECOVERED', async () => {
+  // Relative path on purpose: ON_SUCCESS runs in the repo directory, the same
+  // cwd ON_FAILURE has always used.
+  const t = await setup({ extra: { ON_SUCCESS: 'echo "$DEPLOY_NAME $DEPLOY_OUTCOME $DEPLOY_RECOVERED $DEPLOY_LOG" > notified.txt' } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  const s = await t.state();
+  assert.equal((await fs.readFile(path.join(t.p.repoDir('r'), 'notified.txt'), 'utf8')).trim(), `r ok no ${s.last.log}`, 'a first deploy is a success, not a recovery');
+  assert.match(await t.events(), /notified .* exit 0/);
+});
+
+test('a skipped push notifies neither key', async () => {
+  const t = await setup({ extra: { ON_SUCCESS: 'echo s > success.txt', ON_FAILURE: 'echo f > failure.txt' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  await fs.rm(path.join(t.p.repoDir('r'), 'success.txt'));
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'skipped');
+  assert.equal(await exists(path.join(t.p.repoDir('r'), 'success.txt')), false);
+  assert.equal(await exists(path.join(t.p.repoDir('r'), 'failure.txt')), false);
+});
+
+test('a failed attempt notifies ON_FAILURE and never ON_SUCCESS', async () => {
+  const t = await setup({ build: 'exit 4', extra: { ON_SUCCESS: 'echo s > success.txt', ON_FAILURE: 'echo f > failure.txt' } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'build failed');
+  assert.equal(await exists(path.join(t.p.repoDir('r'), 'failure.txt')), true);
+  assert.equal(await exists(path.join(t.p.repoDir('r'), 'success.txt')), false);
+});
+
+test('DEPLOY_RECOVERED is yes when the attempt before the success failed', async () => {
+  const onSuccess = 'echo "$DEPLOY_RECOVERED" > notified.txt';
+  const t = await setup({ build: 'exit 3', extra: { ON_SUCCESS: onSuccess } });
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'build failed');
+  await writeRepoConf(t.p, 'r', { REPO: t.src.url, BUILD: 'true', DEPLOY: 'true', ON_SUCCESS: onSuccess });
+  t.ctx.repo = await loadRepo(t.p, 'r');
+  assert.equal(await runEntry(t.ctx, { kind: 'webhook', name: 'r' }), 'ok');
+  assert.equal((await fs.readFile(path.join(t.p.repoDir('r'), 'notified.txt'), 'utf8')).trim(), 'yes');
+});
+
+test('ON_SUCCESS runs after a rollback that confirms', async () => {
+  const t = await setup({ extra: { ON_SUCCESS: 'echo "$DEPLOY_RELEASE_ID" > notified.txt' } });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const first = (await t.state()).live;
+  await t.src.commit({ 'mta/y.mjs': '2' });
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  assert.equal(await runEntry(t.ctx, { kind: 'rollback', name: 'r', target: first }), 'ok');
+  assert.equal((await fs.readFile(path.join(t.p.repoDir('r'), 'notified.txt'), 'utf8')).trim(), first);
+});
+
+test('ON_SUCCESS output is masked before it reaches events.log', async () => {
+  const t = await setup({ extra: { ON_SUCCESS: 'echo "leak=$TOK_D"' } });
+  await fs.writeFile(t.p.envFile('r', 'deploy'), 'TOK_D=deploysecret99\n');
+  await runEntry(t.ctx, { kind: 'webhook', name: 'r' });
+  const ev = await t.events();
+  assert.match(ev, /notified .* exit 0  leak=\*\*\*/);
+  assert.ok(!ev.includes('deploysecret99'));
+});
+
 test('a secret from an env file is masked when BUILD echoes it', async () => {
   const t = await setup({ build: 'echo "token=$TOK"; env | grep TOK' });
   await fs.writeFile(t.p.envFile('r', 'build'), 'TOK=verysecretvalue123\n');
@@ -440,8 +497,8 @@ test('ON_FAILURE output masks a build secret too, not only this attempt\'s deplo
   assert.match(ev, /notified .* exit 0  token=\*\*\*/);
 });
 
-test('runOnFailure masks the error message on its failure path too, not only the notifier\'s output', async () => {
-  // runOnFailure writes to events.log twice: once with the notifier's output,
+test('runNotify masks the error message on its failure path too, not only the notifier\'s output', async () => {
+  // runNotify writes to events.log twice: once with the notifier's output,
   // which has always been scrubbed, and once — from its catch arm — with the
   // message of whatever went wrong instead. That second line is the one sink in
   // this module a secret could still reach.
@@ -456,7 +513,7 @@ test('runOnFailure masks the error message on its failure path too, not only the
   const secret = 'deploysecret99';
   const repo = { ...t.repo, onFailure: 'true' };
   const paths = { ...t.p, repoDir: () => { throw new Error(`cannot open the working directory for ${secret}`); } };
-  await runOnFailure({ paths, journal: () => {} }, repo, {
+  await runNotify({ paths, journal: () => {} }, repo, {
     attemptId: 'injected-attempt', outcome: 'build failed', sha: null, releaseId: null, logFile: null,
     envFile: new Map([['TOK_D', secret]]), mask: [secret],
   });

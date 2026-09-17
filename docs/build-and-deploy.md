@@ -10,7 +10,8 @@
   that fails leaves `current` pointing at an unconfirmed release, which is
   what `PENDING` in `flipd status` means.
 - **The exit code is all flipd believes**, unless `HEALTHCHECK` is set. Zero
-  confirms the release: it becomes `live`, the old live becomes `previous`.
+  confirms the release: it becomes `live`, the old live becomes `previous`,
+  and `ON_SUCCESS` fires.
   Anything else is `deploy failed`: the repo is `PENDING`, pushes and `flipd
   trigger` are refused until `flipd rollback <name>` or `flipd run <name>`
   settles it, and `ON_FAILURE` fires. A warning printed to stderr with exit
@@ -165,8 +166,9 @@ scratch, not inherited from the service:
 | `DEPLOY_CURRENT_RELEASE_DIR` | `STOP` only: absolute path of the release `current` points at, or empty on a first deploy |
 | `DEPLOY_CURRENT_RELEASE_ID` | `STOP` only: that release's id, or empty |
 | `DEPLOY_ATTEMPT_ID` | the attempt id, which names the log file |
-| `DEPLOY_OUTCOME` | `ON_FAILURE` only: `fetch failed`, `checkout failed`, `build failed`, `stop failed`, `deploy failed`, `interrupted` or `cancelled` |
-| `DEPLOY_LOG` | `ON_FAILURE` only: path of the attempt log |
+| `DEPLOY_OUTCOME` | `ON_FAILURE` and `ON_SUCCESS` only: `ok`, or `fetch failed`, `checkout failed`, `build failed`, `stop failed`, `deploy failed`, `health failed`, `interrupted` or `cancelled` |
+| `DEPLOY_LOG` | `ON_FAILURE` and `ON_SUCCESS` only: path of the attempt log |
+| `DEPLOY_RECOVERED` | `ON_SUCCESS` only: `yes` when the attempt before this one failed, `no` otherwise — including a repo's first deploy |
 
 Then every line of the phase's env file, set with
 `sudo flipd env <name> build|deploy --set K=V`. flipd's own variables win: an
