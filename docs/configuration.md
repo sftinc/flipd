@@ -41,8 +41,9 @@ be fetched is `checkout failed`, and the live release is untouched.
 ## The server file
 
 `/etc/flipd/flipd.conf` is written by the installer and read once, when the
-service starts, so an edit needs `sudo systemctl restart flipd`. Same syntax
-as a repo file.
+service starts, so an edit needs `sudo flipd upgrade --restart-only`, which
+waits for every repo to go idle before it restarts. Same syntax as a repo
+file.
 
 | Key | Default | Meaning |
 |---|---|---|

@@ -1,7 +1,8 @@
 # Commands
 
 `flipd <command>` with no arguments prints this list. Exit `2` is always a
-usage error; exit `3` is always the service being down or unreachable.
+usage error; exit `3` is the service being down or unreachable for every
+command except `upgrade`, which never returns it — see its own entry.
 
 | Command | Needs | Does |
 |---|---|---|

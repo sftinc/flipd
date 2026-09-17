@@ -216,9 +216,10 @@ is an SSH door, and having both is just having both.
 
 ## Turning the webhook off
 
-`PUBLIC_HOST` is the switch. Comment it out in `/etc/flipd/flipd.conf` and
-restart flipd (`flipd status` idle first, as for any restart). The service
-starts no listener, `WEBHOOK_SECRET` becomes optional, and the journal says
+`PUBLIC_HOST` is the switch. Comment it out in `/etc/flipd/flipd.conf` and run
+`sudo flipd upgrade --restart-only`, which waits for idle itself before it
+restarts. The service starts no listener, `WEBHOOK_SECRET` becomes optional,
+and the journal says
 `webhook listener off: PUBLIC_HOST is not set`. While it is off, the forge's
 deliveries fail visibly — with `install.sh`'s own Caddy block (`handle
 /deploy { reverse_proxy 127.0.0.1:9000 }`), that means proxying to a port

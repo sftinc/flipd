@@ -333,6 +333,10 @@ remember. It refuses rather than guesses when it cannot reach the service —
 an unreachable socket is not proof that nothing is building, and the usual
 cause is a missing `flipd` group membership, not a dead service.
 
+It narrows the window in which a restart can kill a build to a few
+milliseconds; it does not close it. A push landing in that gap is still lost,
+because nothing carries a queued push across a restart.
+
 If it says the upgrade was partial, `flipd.service`, `flipd.logrotate` or
 `install.sh` changed and only the installer can place them. Run the absolute
 `install.sh` path it prints, and check `flipd status` is idle first — the
