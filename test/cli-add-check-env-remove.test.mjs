@@ -281,6 +281,22 @@ test('env --set preserves comments and blank lines, and trims a padded value whi
   assert.ok(!o.out().includes('hunter2'), 'the trimmed-value note names the key only');
 });
 
+test('env: two --set for the same key in one call keep the later value and still report the earlier one as trimmed', async () => {
+  // A Map keyed by K would collapse ['A', '1 '] and ['A', '2'] into just the
+  // second entry before editKV ever saw the padded first one, silently
+  // dropping the "note: trimmed" line even though the write itself started
+  // from a padded assignment. The file bytes end up identical either way —
+  // only the note differs — which is exactly the kind of drift 333 green
+  // tests waved through once already.
+  const p = await makePrefix();
+  await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
+  const file = p.envFile('r', 'build');
+  const o = io();
+  assert.equal(await env(['r', 'build', '--set', 'A=1 ', '--set', 'A=2'], { paths: p, ...o }), 0);
+  assert.equal(await fs.readFile(file, 'utf8'), 'A=2\n');
+  assert.match(o.out(), /trimmed.*A/);
+});
+
 test('env: the $EDITOR path writes on a clean parse and refuses to loop without a tty on a malformed draft', async () => {
   const p = await makePrefix();
   await writeRepoConf(p, 'r', { REPO: 'x', BUILD: 'true', DEPLOY: 'true' });
