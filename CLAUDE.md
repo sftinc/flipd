@@ -79,11 +79,9 @@ check today — the HMAC is the authentication — and adding one means
 deciding who maintains the allowed ranges, which is the part that does
 not have a good answer.
 
-**`docs/` is for readers; scratch lives elsewhere.** Superpowers defaults its
-output to `docs/superpowers/`; here that is overridden. Specs go to
-`.superpowers/specs/YYYY-MM-DD-<topic>-design.md`, plans to
-`.superpowers/plans/YYYY-MM-DD-<feature-name>.md`, and the SDD workspace stays
-under `.superpowers/sdd/`. Parked work goes in `todo/`. Only `docs/` is
+**`docs/` is for readers; scratch lives elsewhere.** Superpowers output goes in
+`.superpowers/`, and the SDD workspace stays under `.superpowers/sdd/`. Parked
+work goes in `todo/`. Only `docs/` is
 tracked, so anything written into the other two is invisible to a clone —
 which is the point: they are working state, not the record.
 
