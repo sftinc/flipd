@@ -36,7 +36,6 @@ everywhere.
 | `todo/`                         | Deferred items, one per file. Yours, git-ignored. See [`todo/CLAUDE.md`](todo/CLAUDE.md).                                                                                                                                                                                                                                    |
 | `SERVER.md`                     | Any box this repo runs on: address, access, hostnames. Git-ignored — **this repo is public.** Absent means no box is set up.                                                                                                                                                                                                 |
 | `SERVER.example.md`             | The shape `SERVER.md` follows, and what [`docs/agent.md`](docs/agent.md) hands an agent for an operator's own box. Tracked, so it carries placeholders and rules and never a real address.                                                                                                                                   |
-| `.superpowers/`                 | Superpowers' own output — `specs/`, `plans/`, `sdd/`. Git-ignored, and the tool prunes it.                                                                                                                                                                                                                                   |
 
 ## Commands
 
@@ -79,11 +78,9 @@ check today — the HMAC is the authentication — and adding one means
 deciding who maintains the allowed ranges, which is the part that does
 not have a good answer.
 
-**`docs/` is for readers; scratch lives elsewhere.** Superpowers output goes in
-`.superpowers/`, and the SDD workspace stays under `.superpowers/sdd/`. Parked
-work goes in `todo/`. Only `docs/` is
-tracked, so anything written into the other two is invisible to a clone —
-which is the point: they are working state, not the record.
+**`docs/` is for readers; scratch lives elsewhere.** Parked work goes in `todo/`. Only `docs/` is
+tracked, so anything written into `todo/` is invisible to a clone —
+which is the point: it is working state, not the record.
 
 ## Architecture
 
